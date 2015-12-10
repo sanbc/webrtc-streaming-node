@@ -1,0 +1,145 @@
+<html>
+<head>
+  <script src="https://cdn.socket.io/socket.io-1.2.0.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+      <link async rel="stylesheet" type="text/css" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.4.0/css/font-awesome.min.css" />
+    <link async rel="stylesheet" type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/octicons/2.4.1/octicons.css" />
+    <link async rel="stylesheet" type="text/css" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/3.4.0/animate.css" />
+  <link rel="stylesheet" href="index.css"/>
+</head>
+<body>
+  <img src="logo.png" style="height:15%;"/>
+  <div id="video">
+    <video id="videosrc"></video>
+  </div>
+  <div id="btnparent">
+  <div id="button" class="button" onclick="toggleVideo()">
+    <i class="fa fa-desktop"></i>
+    <span id="btn">View the Video</span>
+  </div>
+  </div>
+<script>
+  var config = {
+    iceServers: [
+      {
+        url: 'stun:stun.l.google.com:19302',
+      },
+    ],
+  };
+  
+  var constraints = {
+    optional: [
+      {
+        DtlsSrtpKeyAgreement: true,
+      },
+    ],
+    mandatory: {
+      OfferToReceiveAudio: true,
+      OfferToReceiveVideo: true,
+    },
+  };
+   
+  var socket = io.connect(window.location.hostname+':'+window.location.port);
+  var peer = new window.webkitRTCPeerConnection(config, constraints);
+  
+  socket.on('disconnect', function() {
+    peer.close();
+  });
+  
+  socket.on('icecandidate', function(data) {
+
+	console.log("Getting the candidate ......... ")
+ var candidate_temp =  new RTCIceCandidate(data);
+	if(!candidate_temp.candidate) return;
+	console.log("Got the candidate ......... ")
+    peer.addIceCandidate(new RTCIceCandidate(data));
+	
+  });
+  
+  socket.on('offer', function(data) {
+    peer.setRemoteDescription(new RTCSessionDescription(data), function() {
+      peer.createAnswer(function(sdp) {
+        peer.setLocalDescription(sdp, function() {
+          socket.emit('answer', sdp);
+        });
+      });
+    },wait);
+  });
+  
+  socket.on('answer', function (data) {
+    peer.setRemoteDescription(new RTCSessionDescription(data),wait);
+  });
+    
+  peer.onicecandidate = function(event) {
+    var candidate = event.candidate || event;
+    if(!candidate.candidate) return;
+    socket.emit('icecandidate', candidate);
+  };
+
+  peer.onnegotiationneeded = function() {
+    peer.createOffer(function(sdp) {
+      peer.setLocalDescription(sdp, function() {
+        socket.emit('offer', sdp);
+      });
+    });
+  };
+  
+  peer.onaddstream = function(event) {
+    console.log('Peer Add mediaStream:', event.stream);
+    
+    var video = document.querySelector('video');
+    video.src = window.URL.createObjectURL(event.stream);
+    
+    video.onloadedmetadata = function(event) {
+      video.play();
+    };   
+  };
+  
+  peer.onremovestream = function(event) {
+    console.log('Peer Remove mediaStream:', event.stream);
+  };
+
+  peer.ondatachannel = function(event) {
+    var channel = event ? event.channel || event : null;
+    var pingpong = null;
+
+    channel.onopen = function() {
+      console.log('Peer Channel opened!');
+      
+      pingpong = setInterval(function() {
+        console.log('Peer: Sending PING');
+        channel.send('PING');
+      }, 5000);
+    };
+    
+    channel.onclose = function() {
+      console.log('Peer Channel closed!');
+      
+      if (pingpong) {
+        clearInterval(pingpong);
+      }
+    };
+    
+    channel.onmessage = function(event) {
+      var data = event.data;
+      console.log('Peer Message:', data);
+    };
+  };
+function wait() {
+  console.log('waiting');         
+}
+function toggleVideo() {
+    if ($("#btn")[0].innerText=="View the Video") {
+      $("#btn")[0].innerText = "Exit the Video";
+      $("#button>i").removeClass("fa fa-desktop").addClass("fa fa-sign-out");
+      document.getElementById("videosrc").style.display='block';
+    }
+    else {
+      $("#btn")[0].innerText = "View the Video";
+      $("#button>i").removeClass("fa fa-sign-out").addClass("fa fa-desktop");
+      document.getElementById("videosrc").style.display='none';
+    }
+}
+</script>
+</body>
+</html>
