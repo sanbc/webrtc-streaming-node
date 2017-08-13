@@ -6,7 +6,7 @@ var request = require('request');
 
 var PLATFORM = os.platform();
 var ROOT = process.cwd();
-var ARCH = 'arm';
+var ARCH = os.arch();
 var BUILD_WEBRTC = true ;
 var NODEVER = process.version.split('.');
 

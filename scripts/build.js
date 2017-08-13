@@ -17,14 +17,14 @@ if (!fs.existsSync(ROOT + path.sep + 'build' + path.sep + 'config.gypi')) {
 var CHROMIUM_BRANCH = 'branch-heads/47';
 var USE_OPENSSL = false;
 var USE_GTK = false;
-var USE_X11 = false;
+var USE_X11 = true;
 var BUILD_WEBRTC_TESTS = false ;
 var BUILD_WEBRTC_EXAMPLES = false ;
 var SYNC = (process.env['WEBRTC_SYNC'] === 'true') ? true : false;
 
 var PLATFORM = os.platform();
 var SYSTEM = os.release();
-var ARCH = 'arm';
+var ARCH = process.argv[2].substring(14);;
 var NODEJS = path.resolve(process.argv[3]);
 var NODELIB = process.argv[4].substring(3).split('.')[0];
 var NODEGYP = process.argv[5];
@@ -171,12 +171,7 @@ function configure() {
   process.env['GYP_DEFINES'] += ' use_x11=' + ((USE_X11) ? '1' : '0');
   process.env['GYP_DEFINES'] += ' ConfigurationName=' + CONFIG;
   process.env['GYP_DEFINES'] += ' enable_tracing=1';
-  process.env['GYP_DEFINES'] += ' include_pulse_audio=0';
-  process.env['GYP_DEFINES'] += ' include_internal_audio_device=1';
-  process.env['GYP_DEFINES'] += ' arm_float_abi=hard';
-  process.env['GYP_DEFINES'] += ' arm_neon=1';
   process.env['GYP_DEFINES'] += ' werror=';
-  process.env['GYP_CROSSCOMPILE'] = 1;
   
   
   if (process.env['BUILD_WEBRTC_TESTS'] == 'true') {
