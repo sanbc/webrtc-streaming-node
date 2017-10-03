@@ -23,22 +23,19 @@
 *
 */
 
-#ifndef WEBRTC_GETUSERMEDIA_H
-#define WEBRTC_GETUSERMEDIA_H
+#ifndef WEBRTC_PLATFORM_H
+#define WEBRTC_PLATFORM_H
 
 #include "Common.h"
-const char kAudioLabel[] = "audio_label";
-const char kVideoLabel[] = "video_label";
-const char kStreamLabel[] = "stream_label";
-namespace WebRTC {
-  class GetUserMedia {
-   public:
-    static void Init(v8::Handle<v8::Object> exports);
-static std::unique_ptr<cricket::VideoCapturer> OpenVideoCaptureDevice();
-   
-   private:
-   static  void GetMediaStream(const Nan::FunctionCallbackInfo<v8::Value> &info);
+#include "webrtc/modules/audio_device/include/audio_device.h"
 
+namespace WebRTC {
+  class Platform {
+	  public:
+	    static void Init();
+	    static void Dispose();
+      static rtc::Thread *GetWorker();
+static rtc::Thread *GetSignal();
   };
 };
 

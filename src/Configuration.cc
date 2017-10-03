@@ -1,3 +1,4 @@
+
 /*
 * The MIT License (MIT)
 *
@@ -23,20 +24,17 @@
 *
 */
 
-#ifndef WEBRTC_CORE_H
-#define WEBRTC_CORE_H
+#include "Configuration.h"
 
-#include "Common.h"
+using namespace v8;
+using namespace WebRTC;
 
-namespace WebRTC {
-  class Core {
-   public:
-    static void Init();
-    static void Dispose();
-    static rtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> CreateFactory();
-    static webrtc::PeerConnectionFactoryInterface* GetFactory();
-    static cricket::DeviceManagerInterface* GetManager();
-  };
-};
+Configuration::Configuration(v8::Local<v8::Object> value) {
 
-#endif
+}
+
+v8::Local<v8::Value> Configuration::ToConfiguration() {
+  Nan::EscapableHandleScope scope;
+
+  return scope.Escape(Nan::Undefined());
+}
