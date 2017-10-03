@@ -15,7 +15,7 @@
 #endif
 
 #include "webrtc/common_audio/signal_processing/include/signal_processing_library.h"
-#include "webrtc/system_wrappers/interface/compile_assert_c.h"
+#include "webrtc/base/compile_assert_c.h"
 
 extern int32_t WebRtcIsacfix_Log2Q8(uint32_t x);
 
@@ -57,8 +57,6 @@ void WebRtcIsacfix_PCorr2Q32(const int16_t* in, int32_t* logcorQ8) {
     ysum32 += in[PITCH_CORR_LEN2 + k - 1] * in[PITCH_CORR_LEN2 + k - 1] >>
         scaling;
 
-    // TODO(zhongwei.yao): Move this function into a separate NEON code file so
-    // that WEBRTC_DETECT_NEON could take advantage of it.
 #ifdef WEBRTC_HAS_NEON
     {
       int32_t vbuff[4];
@@ -66,7 +64,7 @@ void WebRtcIsacfix_PCorr2Q32(const int16_t* in, int32_t* logcorQ8) {
       // Can't shift a Neon register to right with a non-constant shift value.
       int32x4_t int_32x4_scale = vdupq_n_s32(-scaling);
       // Assert a codition used in loop unrolling at compile-time.
-      COMPILE_ASSERT(PITCH_CORR_LEN2 %4 == 0);
+      RTC_COMPILE_ASSERT(PITCH_CORR_LEN2 %4 == 0);
 
       for (n = 0; n < PITCH_CORR_LEN2; n += 4) {
         int16x4_t int_16x4_x = vld1_s16(&x[n]);

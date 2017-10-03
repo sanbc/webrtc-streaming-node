@@ -10,14 +10,16 @@
 
 #include "webrtc/modules/remote_bitrate_estimator/overuse_estimator.h"
 
-#include <algorithm>
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+
+#include "webrtc/base/logging.h"
 #include "webrtc/modules/remote_bitrate_estimator/include/bwe_defines.h"
-#include "webrtc/system_wrappers/interface/logging.h"
+#include "webrtc/modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 
 namespace webrtc {
 
@@ -47,9 +49,11 @@ OveruseEstimator::~OveruseEstimator() {
 void OveruseEstimator::Update(int64_t t_delta,
                               double ts_delta,
                               int size_delta,
-                              BandwidthUsage current_hypothesis) {
+                              BandwidthUsage current_hypothesis,
+                              int64_t now_ms) {
   const double min_frame_period = UpdateMinFramePeriod(ts_delta);
   const double t_ts_delta = t_delta - ts_delta;
+  BWE_TEST_LOGGING_PLOT(1, "dm_ms", now_ms, t_ts_delta);
   double fs_delta = size_delta;
 
   ++num_of_deltas_;
@@ -61,8 +65,10 @@ void OveruseEstimator::Update(int64_t t_delta,
   E_[0][0] += process_noise_[0];
   E_[1][1] += process_noise_[1];
 
-  if ((current_hypothesis == kBwOverusing && offset_ < prev_offset_) ||
-      (current_hypothesis == kBwUnderusing && offset_ > prev_offset_)) {
+  if ((current_hypothesis == BandwidthUsage::kBwOverusing &&
+       offset_ < prev_offset_) ||
+      (current_hypothesis == BandwidthUsage::kBwUnderusing &&
+       offset_ > prev_offset_)) {
     E_[1][1] += 10 * process_noise_[1];
   }
 
@@ -70,9 +76,12 @@ void OveruseEstimator::Update(int64_t t_delta,
   const double Eh[2] = {E_[0][0]*h[0] + E_[0][1]*h[1],
                         E_[1][0]*h[0] + E_[1][1]*h[1]};
 
+  BWE_TEST_LOGGING_PLOT(1, "d_ms", now_ms, slope_ * h[0] - offset_);
+
   const double residual = t_ts_delta - slope_*h[0] - offset_;
 
-  const bool in_stable_state = (current_hypothesis == kBwNormal);
+  const bool in_stable_state =
+      (current_hypothesis == BandwidthUsage::kBwNormal);
   const double max_residual = 3.0 * sqrt(var_noise_);
   // We try to filter out very late frames. For instance periodic key
   // frames doesn't fit the Gaussian model well.
@@ -111,6 +120,11 @@ void OveruseEstimator::Update(int64_t t_delta,
   slope_ = slope_ + K[0] * residual;
   prev_offset_ = offset_;
   offset_ = offset_ + K[1] * residual;
+
+  BWE_TEST_LOGGING_PLOT(1, "kc", now_ms, K[0]);
+  BWE_TEST_LOGGING_PLOT(1, "km", now_ms, K[1]);
+  BWE_TEST_LOGGING_PLOT(1, "slope_1/bps", now_ms, slope_);
+  BWE_TEST_LOGGING_PLOT(1, "var_noise", now_ms, var_noise_);
 }
 
 double OveruseEstimator::UpdateMinFramePeriod(double ts_delta) {
@@ -118,9 +132,8 @@ double OveruseEstimator::UpdateMinFramePeriod(double ts_delta) {
   if (ts_delta_hist_.size() >= kMinFramePeriodHistoryLength) {
     ts_delta_hist_.pop_front();
   }
-  std::list<double>::iterator it = ts_delta_hist_.begin();
-  for (; it != ts_delta_hist_.end(); it++) {
-    min_frame_period = std::min(*it, min_frame_period);
+  for (const double old_ts_delta : ts_delta_hist_) {
+    min_frame_period = std::min(old_ts_delta, min_frame_period);
   }
   ts_delta_hist_.push_back(ts_delta);
   return min_frame_period;

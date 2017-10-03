@@ -19,9 +19,18 @@
 #include "webrtc/base/gunit.h"
 #include "webrtc/base/logging.h"
 #include "webrtc/base/ssladapter.h"
+#include "webrtc/base/sslstreamadapter.h"
+#include "webrtc/test/field_trial.h"
+#include "webrtc/test/testsupport/fileutils.h"
 
 DEFINE_bool(help, false, "prints this message");
 DEFINE_string(log, "", "logging options to use");
+DEFINE_string(
+    force_fieldtrials,
+    "",
+    "Field trials control experimental feature code which can be forced. "
+    "E.g. running with --force_fieldtrials=WebRTC-FooFeature/Enable/"
+    " will assign the group Enable to field trial WebRTC-FooFeature.");
 #if defined(WEBRTC_WIN)
 DEFINE_int(crt_break_alloc, -1, "memory allocation to break on");
 DEFINE_bool(default_error_handlers, false,
@@ -57,9 +66,12 @@ int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   rtc::FlagList::SetFlagsFromCommandLine(&argc, argv, false);
   if (FLAG_help) {
-    rtc::FlagList::Print(NULL, false);
+    rtc::FlagList::Print(nullptr, false);
     return 0;
   }
+
+  webrtc::test::SetExecutablePath(argv[0]);
+  webrtc::test::InitFieldTrialsFromString(FLAG_force_fieldtrials);
 
 #if defined(WEBRTC_WIN)
   if (!FLAG_default_error_handlers) {
@@ -69,12 +81,12 @@ int main(int argc, char** argv) {
     _CrtSetReportHook2(_CRT_RPTHOOK_INSTALL, TestCrtReportHandler);
   }
 
-#ifdef _DEBUG  // Turn on memory leak checking on Windows.
+#if !defined(NDEBUG)  // Turn on memory leak checking on Windows.
   _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF |_CRTDBG_LEAK_CHECK_DF);
   if (FLAG_crt_break_alloc >= 0) {
     _crtBreakAlloc = FLAG_crt_break_alloc;
   }
-#endif  // _DEBUG
+#endif
 #endif  // WEBRTC_WIN
 
   rtc::Filesystem::SetOrganizationName("google");
@@ -84,10 +96,15 @@ int main(int argc, char** argv) {
   rtc::LogMessage::LogTimestamps();
   if (*FLAG_log != '\0') {
     rtc::LogMessage::ConfigureLogging(FLAG_log);
+  } else if (rtc::LogMessage::GetLogToDebug() > rtc::LS_INFO) {
+    // Default to LS_INFO, even for release builds to provide better test
+    // logging.
+    rtc::LogMessage::LogToDebug(rtc::LS_INFO);
   }
 
   // Initialize SSL which are used by several tests.
   rtc::InitializeSSL();
+  rtc::SSLStreamAdapter::enable_time_callback_for_testing();
 
   int res = RUN_ALL_TESTS();
 

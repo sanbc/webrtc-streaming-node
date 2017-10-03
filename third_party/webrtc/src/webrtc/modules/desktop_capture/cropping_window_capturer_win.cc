@@ -11,10 +11,10 @@
 #include "webrtc/modules/desktop_capture/cropping_window_capturer.h"
 
 #include "webrtc/base/win32.h"
+#include "webrtc/base/logging.h"
 #include "webrtc/modules/desktop_capture/win/scoped_gdi_object.h"
 #include "webrtc/modules/desktop_capture/win/screen_capture_utils.h"
 #include "webrtc/modules/desktop_capture/win/window_capture_utils.h"
-#include "webrtc/system_wrappers/interface/logging.h"
 
 namespace webrtc {
 
@@ -210,9 +210,10 @@ DesktopRect CroppingWindowCapturerWin::GetWindowRectInVirtualScreen() {
 }  // namespace
 
 // static
-WindowCapturer*
-CroppingWindowCapturer::Create(const DesktopCaptureOptions& options) {
-  return new CroppingWindowCapturerWin(options);
+std::unique_ptr<DesktopCapturer> CroppingWindowCapturer::CreateCapturer(
+    const DesktopCaptureOptions& options) {
+  return std::unique_ptr<DesktopCapturer>(
+      new CroppingWindowCapturerWin(options));
 }
 
 }  // namespace webrtc

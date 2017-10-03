@@ -13,7 +13,7 @@
 
 #include <vector>
 
-#include "webrtc/common_video/interface/video_image.h"
+#include "webrtc/common_types.h"
 
 namespace webrtc {
 namespace test {
@@ -28,6 +28,7 @@ struct FrameStatistic {
   int decode_return_code;
   int encode_time_in_us;
   int decode_time_in_us;
+  int qp;
   int frame_number;
   // How many packets were discarded of the encoded frame data (if any).
   int packets_dropped;
@@ -39,7 +40,7 @@ struct FrameStatistic {
 
   // Copied from EncodedImage
   size_t encoded_frame_length_in_bytes;
-  webrtc::VideoFrameType frame_type;
+  webrtc::FrameType frame_type;
 };
 
 // Handles statistics from a single video processing run.

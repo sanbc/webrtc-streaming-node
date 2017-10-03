@@ -8,8 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "testing/gtest/include/gtest/gtest.h"
+#include "webrtc/test/gtest.h"
 #include "webrtc/test/testsupport/fileutils.h"
+
+namespace webrtc {
+namespace voetest {
 
 void InitializeGoogleTest(int* argc, char** argv) {
   // Initialize WebRTC testing framework so paths to resources can be resolved.
@@ -20,3 +23,6 @@ void InitializeGoogleTest(int* argc, char** argv) {
 int RunInAutomatedMode() {
   return RUN_ALL_TESTS();
 }
+
+}  // namespace voetest
+}  // namespace webrtc

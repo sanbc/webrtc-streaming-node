@@ -8,20 +8,19 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef TALK_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_
-#define TALK_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_
-#pragma once
+#ifndef WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_
+#define WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_
 
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 
-#include "talk/app/webrtc/mediastreaminterface.h"
-#include "talk/app/webrtc/peerconnectioninterface.h"
+#include "webrtc/api/mediastreaminterface.h"
+#include "webrtc/api/peerconnectioninterface.h"
 #include "webrtc/examples/peerconnection/client/main_wnd.h"
 #include "webrtc/examples/peerconnection/client/peer_connection_client.h"
-#include "webrtc/base/scoped_ptr.h"
 
 namespace webrtc {
 class VideoCaptureModule;
@@ -59,55 +58,63 @@ class Conductor
   void DeletePeerConnection();
   void EnsureStreamingUI();
   void AddStreams();
-  cricket::VideoCapturer* OpenVideoCaptureDevice();
+  std::unique_ptr<cricket::VideoCapturer> OpenVideoCaptureDevice();
 
   //
   // PeerConnectionObserver implementation.
   //
-  virtual void OnStateChange(
-      webrtc::PeerConnectionObserver::StateType state_changed) {}
-  virtual void OnAddStream(webrtc::MediaStreamInterface* stream);
-  virtual void OnRemoveStream(webrtc::MediaStreamInterface* stream);
-  virtual void OnDataChannel(webrtc::DataChannelInterface* channel) {}
-  virtual void OnRenegotiationNeeded() {}
-  virtual void OnIceChange() {}
-  virtual void OnIceCandidate(const webrtc::IceCandidateInterface* candidate);
+
+  void OnSignalingChange(
+      webrtc::PeerConnectionInterface::SignalingState new_state) override{};
+  void OnAddStream(
+      rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
+  void OnRemoveStream(
+      rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) override;
+  void OnDataChannel(
+      rtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {}
+  void OnRenegotiationNeeded() override {}
+  void OnIceConnectionChange(
+      webrtc::PeerConnectionInterface::IceConnectionState new_state) override{};
+  void OnIceGatheringChange(
+      webrtc::PeerConnectionInterface::IceGatheringState new_state) override{};
+  void OnIceCandidate(const webrtc::IceCandidateInterface* candidate) override;
+  void OnIceConnectionReceivingChange(bool receiving) override {}
 
   //
   // PeerConnectionClientObserver implementation.
   //
 
-  virtual void OnSignedIn();
+  void OnSignedIn() override;
 
-  virtual void OnDisconnected();
+  void OnDisconnected() override;
 
-  virtual void OnPeerConnected(int id, const std::string& name);
+  void OnPeerConnected(int id, const std::string& name) override;
 
-  virtual void OnPeerDisconnected(int id);
+  void OnPeerDisconnected(int id) override;
 
-  virtual void OnMessageFromPeer(int peer_id, const std::string& message);
+  void OnMessageFromPeer(int peer_id, const std::string& message) override;
 
-  virtual void OnMessageSent(int err);
+  void OnMessageSent(int err) override;
 
-  virtual void OnServerConnectionFailure();
+  void OnServerConnectionFailure() override;
 
   //
   // MainWndCallback implementation.
   //
 
-  virtual void StartLogin(const std::string& server, int port);
+  void StartLogin(const std::string& server, int port) override;
 
-  virtual void DisconnectFromServer();
+  void DisconnectFromServer() override;
 
-  virtual void ConnectToPeer(int peer_id);
+  void ConnectToPeer(int peer_id) override;
 
-  virtual void DisconnectFromCurrentPeer();
+  void DisconnectFromCurrentPeer() override;
 
-  virtual void UIThreadCallback(int msg_id, void* data);
+  void UIThreadCallback(int msg_id, void* data) override;
 
   // CreateSessionDescriptionObserver implementation.
-  virtual void OnSuccess(webrtc::SessionDescriptionInterface* desc);
-  virtual void OnFailure(const std::string& error);
+  void OnSuccess(webrtc::SessionDescriptionInterface* desc) override;
+  void OnFailure(const std::string& error) override;
 
  protected:
   // Send a message to the remote peer.
@@ -126,4 +133,4 @@ class Conductor
   std::string server_;
 };
 
-#endif  // TALK_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_
+#endif  // WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_CONDUCTOR_H_

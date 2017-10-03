@@ -8,6 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
 #include <string>
 
 #include "webrtc/base/gunit.h"
@@ -101,7 +102,7 @@ class SSLAdapterTestDummyClient : public sigslot::has_slots<> {
     char buffer[4096] = "";
 
     // Read data received from the server and store it in our internal buffer.
-    int read = socket->Recv(buffer, sizeof(buffer) - 1);
+    int read = socket->Recv(buffer, sizeof(buffer) - 1, nullptr);
     if (read != -1) {
       buffer[read] = '\0';
 
@@ -123,7 +124,7 @@ class SSLAdapterTestDummyClient : public sigslot::has_slots<> {
  private:
   const rtc::SSLMode ssl_mode_;
 
-  rtc::scoped_ptr<rtc::SSLAdapter> ssl_adapter_;
+  std::unique_ptr<rtc::SSLAdapter> ssl_adapter_;
 
   std::string data_;
 };
@@ -131,10 +132,10 @@ class SSLAdapterTestDummyClient : public sigslot::has_slots<> {
 class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
  public:
   explicit SSLAdapterTestDummyServer(const rtc::SSLMode& ssl_mode,
-                                     const rtc::KeyType key_type)
+                                     const rtc::KeyParams& key_params)
       : ssl_mode_(ssl_mode) {
     // Generate a key pair and a certificate for this host.
-    ssl_identity_.reset(rtc::SSLIdentity::Generate(GetHostname(), key_type));
+    ssl_identity_.reset(rtc::SSLIdentity::Generate(GetHostname(), key_params));
 
     server_socket_.reset(CreateSocket(ssl_mode_));
 
@@ -164,8 +165,8 @@ class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
   }
 
   int Send(const std::string& message) {
-    if (ssl_stream_adapter_ == NULL
-        || ssl_stream_adapter_->GetState() != rtc::SS_OPEN) {
+    if (ssl_stream_adapter_ == nullptr ||
+        ssl_stream_adapter_->GetState() != rtc::SS_OPEN) {
       // No connection yet.
       return -1;
     }
@@ -186,7 +187,7 @@ class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
 
   void AcceptConnection(const rtc::SocketAddress& address) {
     // Only a single connection is supported.
-    ASSERT_TRUE(ssl_stream_adapter_ == NULL);
+    ASSERT_TRUE(ssl_stream_adapter_ == nullptr);
 
     // This is only for DTLS.
     ASSERT_EQ(rtc::SSL_MODE_DTLS, ssl_mode_);
@@ -201,9 +202,9 @@ class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
 
   void OnServerSocketReadEvent(rtc::AsyncSocket* socket) {
     // Only a single connection is supported.
-    ASSERT_TRUE(ssl_stream_adapter_ == NULL);
+    ASSERT_TRUE(ssl_stream_adapter_ == nullptr);
 
-    DoHandshake(server_socket_->Accept(NULL));
+    DoHandshake(server_socket_->Accept(nullptr));
   }
 
   void OnSSLStreamAdapterEvent(rtc::StreamInterface* stream, int sig, int err) {
@@ -251,7 +252,7 @@ class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
     ssl_stream_adapter_->SetPeerCertificateDigest(rtc::DIGEST_SHA_1, digest,
         digest_len);
 
-    ssl_stream_adapter_->StartSSLWithPeer();
+    ssl_stream_adapter_->StartSSL();
 
     ssl_stream_adapter_->SignalEvent.connect(this,
         &SSLAdapterTestDummyServer::OnSSLStreamAdapterEvent);
@@ -259,10 +260,10 @@ class SSLAdapterTestDummyServer : public sigslot::has_slots<> {
 
   const rtc::SSLMode ssl_mode_;
 
-  rtc::scoped_ptr<rtc::AsyncSocket> server_socket_;
-  rtc::scoped_ptr<rtc::SSLStreamAdapter> ssl_stream_adapter_;
+  std::unique_ptr<rtc::AsyncSocket> server_socket_;
+  std::unique_ptr<rtc::SSLStreamAdapter> ssl_stream_adapter_;
 
-  rtc::scoped_ptr<rtc::SSLIdentity> ssl_identity_;
+  std::unique_ptr<rtc::SSLIdentity> ssl_identity_;
 
   std::string data_;
 };
@@ -271,10 +272,11 @@ class SSLAdapterTestBase : public testing::Test,
                            public sigslot::has_slots<> {
  public:
   explicit SSLAdapterTestBase(const rtc::SSLMode& ssl_mode,
-                              const rtc::KeyType key_type)
+                              const rtc::KeyParams& key_params)
       : ssl_mode_(ssl_mode),
-        ss_scope_(new rtc::VirtualSocketServer(NULL)),
-        server_(new SSLAdapterTestDummyServer(ssl_mode_, key_type)),
+        vss_(new rtc::VirtualSocketServer()),
+        thread_(vss_.get()),
+        server_(new SSLAdapterTestDummyServer(ssl_mode_, key_params)),
         client_(new SSLAdapterTestDummyClient(ssl_mode_)),
         handshake_wait_(kTimeout) {}
 
@@ -337,10 +339,10 @@ class SSLAdapterTestBase : public testing::Test,
  private:
   const rtc::SSLMode ssl_mode_;
 
-  const rtc::SocketServerScope ss_scope_;
-
-  rtc::scoped_ptr<SSLAdapterTestDummyServer> server_;
-  rtc::scoped_ptr<SSLAdapterTestDummyClient> client_;
+  std::unique_ptr<rtc::VirtualSocketServer> vss_;
+  rtc::AutoSocketServerThread thread_;
+  std::unique_ptr<SSLAdapterTestDummyServer> server_;
+  std::unique_ptr<SSLAdapterTestDummyClient> client_;
 
   int handshake_wait_;
 };
@@ -348,28 +350,26 @@ class SSLAdapterTestBase : public testing::Test,
 class SSLAdapterTestTLS_RSA : public SSLAdapterTestBase {
  public:
   SSLAdapterTestTLS_RSA()
-      : SSLAdapterTestBase(rtc::SSL_MODE_TLS, rtc::KT_RSA) {}
+      : SSLAdapterTestBase(rtc::SSL_MODE_TLS, rtc::KeyParams::RSA()) {}
 };
 
 class SSLAdapterTestTLS_ECDSA : public SSLAdapterTestBase {
  public:
   SSLAdapterTestTLS_ECDSA()
-      : SSLAdapterTestBase(rtc::SSL_MODE_TLS, rtc::KT_ECDSA) {}
+      : SSLAdapterTestBase(rtc::SSL_MODE_TLS, rtc::KeyParams::ECDSA()) {}
 };
 
 class SSLAdapterTestDTLS_RSA : public SSLAdapterTestBase {
  public:
   SSLAdapterTestDTLS_RSA()
-      : SSLAdapterTestBase(rtc::SSL_MODE_DTLS, rtc::KT_RSA) {}
+      : SSLAdapterTestBase(rtc::SSL_MODE_DTLS, rtc::KeyParams::RSA()) {}
 };
 
 class SSLAdapterTestDTLS_ECDSA : public SSLAdapterTestBase {
  public:
   SSLAdapterTestDTLS_ECDSA()
-      : SSLAdapterTestBase(rtc::SSL_MODE_DTLS, rtc::KT_ECDSA) {}
+      : SSLAdapterTestBase(rtc::SSL_MODE_DTLS, rtc::KeyParams::ECDSA()) {}
 };
-
-#if SSL_USE_OPENSSL
 
 // Basic tests: TLS
 
@@ -418,5 +418,3 @@ TEST_F(SSLAdapterTestDTLS_ECDSA, TestDTLSTransfer) {
   TestHandshake(true);
   TestTransfer("Hello, world!");
 }
-
-#endif  // SSL_USE_OPENSSL

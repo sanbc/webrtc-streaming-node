@@ -15,13 +15,15 @@
 #include <string>
 
 #include "webrtc/base/asyncsocket.h"
+#include "webrtc/base/constructormagic.h"
 #include "webrtc/base/cryptstring.h"
 #include "webrtc/base/logging.h"
 
 namespace rtc {
 
 struct HttpAuthContext;
-class ByteBuffer;
+class ByteBufferReader;
+class ByteBufferWriter;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -34,7 +36,7 @@ class BufferedReadAdapter : public AsyncSocketAdapter {
   ~BufferedReadAdapter() override;
 
   int Send(const void* pv, size_t cb) override;
-  int Recv(void* pv, size_t cb) override;
+  int Recv(void* pv, size_t cb, int64_t* timestamp) override;
 
  protected:
   int DirectSend(const void* pv, size_t cb) {
@@ -140,18 +142,6 @@ class AsyncHttpsProxySocket : public BufferedReadAdapter {
   RTC_DISALLOW_COPY_AND_ASSIGN(AsyncHttpsProxySocket);
 };
 
-/* TODO: Implement this.
-class AsyncHttpsProxyServerSocket : public AsyncProxyServerSocket {
- public:
-  explicit AsyncHttpsProxyServerSocket(AsyncSocket* socket);
-
- private:
-  virtual void ProcessInput(char * data, size_t& len);
-  void Error(int error);
-  RTC_DISALLOW_COPY_AND_ASSIGN(AsyncHttpsProxyServerSocket);
-};
-*/
-
 ///////////////////////////////////////////////////////////////////////////////
 
 // Implements a socket adapter that speaks the SOCKS proxy protocol.
@@ -193,13 +183,13 @@ class AsyncSocksProxyServerSocket : public AsyncProxyServerSocket {
 
  private:
   void ProcessInput(char* data, size_t* len) override;
-  void DirectSend(const ByteBuffer& buf);
+  void DirectSend(const ByteBufferWriter& buf);
 
-  void HandleHello(ByteBuffer* request);
-  void SendHelloReply(uint8 method);
-  void HandleAuth(ByteBuffer* request);
-  void SendAuthReply(uint8 result);
-  void HandleConnect(ByteBuffer* request);
+  void HandleHello(ByteBufferReader* request);
+  void SendHelloReply(uint8_t method);
+  void HandleAuth(ByteBufferReader* request);
+  void SendAuthReply(uint8_t result);
+  void HandleConnect(ByteBufferReader* request);
   void SendConnectResult(int result, const SocketAddress& addr) override;
 
   void Error(int error);
@@ -211,34 +201,6 @@ class AsyncSocksProxyServerSocket : public AsyncProxyServerSocket {
   State state_;
   RTC_DISALLOW_COPY_AND_ASSIGN(AsyncSocksProxyServerSocket);
 };
-
-///////////////////////////////////////////////////////////////////////////////
-
-// Implements a socket adapter that logs everything that it sends and receives.
-class LoggingSocketAdapter : public AsyncSocketAdapter {
- public:
-  LoggingSocketAdapter(AsyncSocket* socket, LoggingSeverity level,
-                 const char * label, bool hex_mode = false);
-
-  int Send(const void* pv, size_t cb) override;
-  int SendTo(const void* pv, size_t cb, const SocketAddress& addr) override;
-  int Recv(void* pv, size_t cb) override;
-  int RecvFrom(void* pv, size_t cb, SocketAddress* paddr) override;
-  int Close() override;
-
- protected:
-  void OnConnectEvent(AsyncSocket* socket) override;
-  void OnCloseEvent(AsyncSocket* socket, int err) override;
-
- private:
-  LoggingSeverity level_;
-  std::string label_;
-  bool hex_mode_;
-  LogMultilineState lms_;
-  RTC_DISALLOW_COPY_AND_ASSIGN(LoggingSocketAdapter);
-};
-
-///////////////////////////////////////////////////////////////////////////////
 
 }  // namespace rtc
 

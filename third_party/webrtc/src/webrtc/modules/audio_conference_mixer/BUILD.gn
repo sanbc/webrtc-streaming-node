@@ -6,18 +6,20 @@
 # in the file PATENTS.  All contributing project authors may
 # be found in the AUTHORS file in the root of the source tree.
 
+import("../../webrtc.gni")
+
 config("audio_conference_mixer_config") {
   visibility = [ ":*" ]  # Only targets in this file can depend on this.
   include_dirs = [
-    "interface",
-    "../interface",
+    "include",
+    "../include",
   ]
 }
 
-source_set("audio_conference_mixer") {
+rtc_static_library("audio_conference_mixer") {
   sources = [
-    "interface/audio_conference_mixer.h",
-    "interface/audio_conference_mixer_defines.h",
+    "include/audio_conference_mixer.h",
+    "include/audio_conference_mixer_defines.h",
     "source/audio_conference_mixer_impl.cc",
     "source/audio_conference_mixer_impl.h",
     "source/audio_frame_manipulator.cc",
@@ -29,22 +31,50 @@ source_set("audio_conference_mixer") {
     "source/time_scheduler.h",
   ]
 
-  configs += [ "../..:common_config" ]
+  public_configs = [ ":audio_conference_mixer_config" ]
 
-  public_configs = [
-    "../..:common_inherited_config",
-    ":audio_conference_mixer_config",
-  ]
-
-  if (is_clang) {
-    # Suppress warnings from Chrome's Clang plugins.
-    # See http://code.google.com/p/webrtc/issues/detail?id=163 for details.
-    configs -= [ "//build/config/clang:find_bad_constructs" ]
+  if (!build_with_chromium && is_clang) {
+    # Suppress warnings from the Chromium Clang plugin (bugs.webrtc.org/163).
+    suppressed_configs += [ "//build/config/clang:find_bad_constructs" ]
   }
 
   deps = [
+    "..:module_api",
+    "../..:webrtc_common",
+    "../../audio/utility:audio_frame_operations",
+    "../../base:rtc_base_approved",
     "../../system_wrappers",
     "../audio_processing",
-    "../utility",
   ]
+}
+
+if (rtc_include_tests) {
+  rtc_source_set("audio_conference_mixer_unittests") {
+    testonly = true
+
+    # Skip restricting visibility on mobile platforms since the tests on those
+    # gets additional generated targets which would require many lines here to
+    # cover (which would be confusing to read and hard to maintain).
+    if (!is_android && !is_ios) {
+      visibility = [ "//webrtc/modules:modules_unittests" ]
+    }
+    sources = [
+      "test/audio_conference_mixer_unittest.cc",
+    ]
+    deps = [
+      ":audio_conference_mixer",
+      "../../test:test_support",
+      "//testing/gmock",
+    ]
+    if (is_win) {
+      cflags = [
+        # TODO(kjellander): bugs.webrtc.org/261: Fix this warning.
+        "/wd4373",  # virtual function override.
+      ]
+    }
+    if (!build_with_chromium && is_clang) {
+      # Suppress warnings from the Chromium Clang plugin (bugs.webrtc.org/163).
+      suppressed_configs += [ "//build/config/clang:find_bad_constructs" ]
+    }
+  }
 }

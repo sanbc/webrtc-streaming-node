@@ -8,20 +8,19 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef PEERCONNECTION_SAMPLES_CLIENT_MAIN_WND_H_
-#define PEERCONNECTION_SAMPLES_CLIENT_MAIN_WND_H_
-#pragma once
+#ifndef WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_MAIN_WND_H_
+#define WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_MAIN_WND_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
-#include "talk/app/webrtc/mediastreaminterface.h"
-#include "webrtc/examples/peerconnection/client/peer_connection_client.h"
-#include "talk/media/base/mediachannel.h"
-#include "talk/media/base/videocommon.h"
-#include "talk/media/base/videoframe.h"
-#include "talk/media/base/videorenderer.h"
+#include "webrtc/api/mediastreaminterface.h"
+#include "webrtc/api/video/video_frame.h"
 #include "webrtc/base/win32.h"
+#include "webrtc/examples/peerconnection/client/peer_connection_client.h"
+#include "webrtc/media/base/mediachannel.h"
+#include "webrtc/media/base/videocommon.h"
 
 class MainWndCallback {
  public:
@@ -60,7 +59,8 @@ class MainWindow {
 
   virtual void StartLocalRenderer(webrtc::VideoTrackInterface* local_video) = 0;
   virtual void StopLocalRenderer() = 0;
-  virtual void StartRemoteRenderer(webrtc::VideoTrackInterface* remote_video) = 0;
+  virtual void StartRemoteRenderer(
+      webrtc::VideoTrackInterface* remote_video) = 0;
   virtual void StopRemoteRenderer() = 0;
 
   virtual void QueueUIThreadCallback(int msg_id, void* data) = 0;
@@ -101,7 +101,7 @@ class MainWnd : public MainWindow {
 
   HWND handle() const { return wnd_; }
 
-  class VideoRenderer : public webrtc::VideoRendererInterface {
+  class VideoRenderer : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
    public:
     VideoRenderer(HWND wnd, int width, int height,
                   webrtc::VideoTrackInterface* track_to_render);
@@ -115,14 +115,15 @@ class MainWnd : public MainWindow {
       ::LeaveCriticalSection(&buffer_lock_);
     }
 
-    // VideoRendererInterface implementation
-    virtual void SetSize(int width, int height);
-    virtual void RenderFrame(const cricket::VideoFrame* frame);
+    // VideoSinkInterface implementation
+    void OnFrame(const webrtc::VideoFrame& frame) override;
 
     const BITMAPINFO& bmi() const { return bmi_; }
-    const uint8* image() const { return image_.get(); }
+    const uint8_t* image() const { return image_.get(); }
 
    protected:
+    void SetSize(int width, int height);
+
     enum {
       SET_SIZE,
       RENDER_FRAME,
@@ -130,7 +131,7 @@ class MainWnd : public MainWindow {
 
     HWND wnd_;
     BITMAPINFO bmi_;
-    rtc::scoped_ptr<uint8[]> image_;
+    std::unique_ptr<uint8_t[]> image_;
     CRITICAL_SECTION buffer_lock_;
     rtc::scoped_refptr<webrtc::VideoTrackInterface> rendered_track_;
   };
@@ -175,8 +176,8 @@ class MainWnd : public MainWindow {
   void HandleTabbing();
 
  private:
-  rtc::scoped_ptr<VideoRenderer> local_renderer_;
-  rtc::scoped_ptr<VideoRenderer> remote_renderer_;
+  std::unique_ptr<VideoRenderer> local_renderer_;
+  std::unique_ptr<VideoRenderer> remote_renderer_;
   UI ui_;
   HWND wnd_;
   DWORD ui_thread_id_;
@@ -197,4 +198,4 @@ class MainWnd : public MainWindow {
 };
 #endif  // WIN32
 
-#endif  // PEERCONNECTION_SAMPLES_CLIENT_MAIN_WND_H_
+#endif  // WEBRTC_EXAMPLES_PEERCONNECTION_CLIENT_MAIN_WND_H_

@@ -37,11 +37,37 @@ void DesktopRect::IntersectWith(const DesktopRect& rect) {
   }
 }
 
+void DesktopRect::UnionWith(const DesktopRect& rect) {
+  if (is_empty()) {
+    *this = rect;
+    return;
+  }
+
+  if (rect.is_empty()) {
+    return;
+  }
+
+  left_ = std::min(left(), rect.left());
+  top_ = std::min(top(), rect.top());
+  right_ = std::max(right(), rect.right());
+  bottom_ = std::max(bottom(), rect.bottom());
+}
+
 void DesktopRect::Translate(int32_t dx, int32_t dy) {
   left_ += dx;
   top_ += dy;
   right_ += dx;
   bottom_ += dy;
+}
+
+void DesktopRect::Extend(int32_t left_offset,
+                         int32_t top_offset,
+                         int32_t right_offset,
+                         int32_t bottom_offset) {
+  left_ -= left_offset;
+  top_ -= top_offset;
+  right_ += right_offset;
+  bottom_ += bottom_offset;
 }
 
 }  // namespace webrtc

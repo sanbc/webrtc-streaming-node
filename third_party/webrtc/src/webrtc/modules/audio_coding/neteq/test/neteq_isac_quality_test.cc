@@ -8,12 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/modules/audio_coding/codecs/isac/fix/interface/isacfix.h"
+#include "webrtc/modules/audio_coding/codecs/isac/fix/include/isacfix.h"
 #include "webrtc/modules/audio_coding/neteq/tools/neteq_quality_test.h"
 
 using google::RegisterFlagValidator;
 using google::ParseCommandLineFlags;
-using std::string;
 using testing::InitGoogleTest;
 
 namespace webrtc {
@@ -43,8 +42,8 @@ class NetEqIsacQualityTest : public NetEqQualityTest {
   NetEqIsacQualityTest();
   void SetUp() override;
   void TearDown() override;
-  virtual int EncodeBlock(int16_t* in_data, size_t block_size_samples,
-                          uint8_t* payload, size_t max_bytes);
+  int EncodeBlock(int16_t* in_data, size_t block_size_samples,
+                  rtc::Buffer* payload, size_t max_bytes) override;
  private:
   ISACFIX_MainStruct* isac_encoder_;
   int bit_rate_kbps_;
@@ -54,13 +53,12 @@ NetEqIsacQualityTest::NetEqIsacQualityTest()
     : NetEqQualityTest(kIsacBlockDurationMs,
                        kIsacInputSamplingKhz,
                        kIsacOutputSamplingKhz,
-                       kDecoderISAC),
+                       NetEqDecoder::kDecoderISAC),
       isac_encoder_(NULL),
-      bit_rate_kbps_(FLAGS_bit_rate_kbps) {
-}
+      bit_rate_kbps_(FLAGS_bit_rate_kbps) {}
 
 void NetEqIsacQualityTest::SetUp() {
-  ASSERT_EQ(1, channels_) << "iSAC supports only mono audio.";
+  ASSERT_EQ(1u, channels_) << "iSAC supports only mono audio.";
   // Create encoder memory.
   WebRtcIsacfix_Create(&isac_encoder_);
   ASSERT_TRUE(isac_encoder_ != NULL);
@@ -79,7 +77,7 @@ void NetEqIsacQualityTest::TearDown() {
 
 int NetEqIsacQualityTest::EncodeBlock(int16_t* in_data,
                                       size_t block_size_samples,
-                                      uint8_t* payload, size_t max_bytes) {
+                                      rtc::Buffer* payload, size_t max_bytes) {
   // ISAC takes 10 ms for every call.
   const int subblocks = kIsacBlockDurationMs / 10;
   const int subblock_length = 10 * kIsacInputSamplingKhz;
@@ -90,7 +88,11 @@ int NetEqIsacQualityTest::EncodeBlock(int16_t* in_data,
     // The Isac encoder does not perform encoding (and returns 0) until it
     // receives a sequence of sub-blocks that amount to the frame duration.
     EXPECT_EQ(0, value);
-    value = WebRtcIsacfix_Encode(isac_encoder_, &in_data[pointer], payload);
+    payload->AppendData(max_bytes, [&] (rtc::ArrayView<uint8_t> payload) {
+        value = WebRtcIsacfix_Encode(isac_encoder_, &in_data[pointer],
+                                     payload.data());
+        return (value >= 0) ? static_cast<size_t>(value) : 0;
+      });
   }
   EXPECT_GT(value, 0);
   return value;

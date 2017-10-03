@@ -14,7 +14,6 @@
 #include "webrtc/base/pathutils.h"
 #include "webrtc/base/stream.h"
 #include "webrtc/base/thread.h"
-#include "webrtc/test/testsupport/gtest_disable.h"
 
 namespace rtc {
 
@@ -38,7 +37,7 @@ class LogSinkImpl
 // Test basic logging operation. We should get the INFO log but not the VERBOSE.
 // We should restore the correct global state at the end.
 TEST(LogTest, SingleStream) {
-  int sev = LogMessage::GetLogToStream(NULL);
+  int sev = LogMessage::GetLogToStream(nullptr);
 
   std::string str;
   LogSinkImpl<StringStream> stream(&str);
@@ -53,14 +52,14 @@ TEST(LogTest, SingleStream) {
   LogMessage::RemoveLogToStream(&stream);
   EXPECT_EQ(LS_NONE, LogMessage::GetLogToStream(&stream));
 
-  EXPECT_EQ(sev, LogMessage::GetLogToStream(NULL));
+  EXPECT_EQ(sev, LogMessage::GetLogToStream(nullptr));
 }
 
 // Test using multiple log streams. The INFO stream should get the INFO message,
 // the VERBOSE stream should get the INFO and the VERBOSE.
 // We should restore the correct global state at the end.
 TEST(LogTest, MultipleStreams) {
-  int sev = LogMessage::GetLogToStream(NULL);
+  int sev = LogMessage::GetLogToStream(nullptr);
 
   std::string str1, str2;
   LogSinkImpl<StringStream> stream1(&str1), stream2(&str2);
@@ -82,26 +81,26 @@ TEST(LogTest, MultipleStreams) {
   EXPECT_EQ(LS_NONE, LogMessage::GetLogToStream(&stream2));
   EXPECT_EQ(LS_NONE, LogMessage::GetLogToStream(&stream1));
 
-  EXPECT_EQ(sev, LogMessage::GetLogToStream(NULL));
+  EXPECT_EQ(sev, LogMessage::GetLogToStream(nullptr));
 }
 
 // Ensure we don't crash when adding/removing streams while threads are going.
 // We should restore the correct global state at the end.
 class LogThread : public Thread {
  public:
-  virtual ~LogThread() {
+  ~LogThread() override {
     Stop();
   }
 
  private:
-  void Run() {
+  void Run() override {
     // LS_SENSITIVE to avoid cluttering up any real logging going on
     LOG(LS_SENSITIVE) << "LOG";
   }
 };
 
 TEST(LogTest, MultipleThreads) {
-  int sev = LogMessage::GetLogToStream(NULL);
+  int sev = LogMessage::GetLogToStream(nullptr);
 
   LogThread thread1, thread2, thread3;
   thread1.Start();
@@ -118,39 +117,46 @@ TEST(LogTest, MultipleThreads) {
     LogMessage::RemoveLogToStream(&stream3);
   }
 
-  EXPECT_EQ(sev, LogMessage::GetLogToStream(NULL));
+  EXPECT_EQ(sev, LogMessage::GetLogToStream(nullptr));
 }
 
 
 TEST(LogTest, WallClockStartTime) {
-  uint32 time = LogMessage::WallClockStartTime();
+  uint32_t time = LogMessage::WallClockStartTime();
   // Expect the time to be in a sensible range, e.g. > 2012-01-01.
   EXPECT_GT(time, 1325376000u);
 }
 
 // Test the time required to write 1000 80-character logs to an unbuffered file.
-TEST(LogTest, Perf) {
+#if defined (WEBRTC_ANDROID)
+// Fails on Android: https://bugs.chromium.org/p/webrtc/issues/detail?id=4364.
+#define MAYBE_Perf DISABLED_Perf
+#else
+#define MAYBE_Perf Perf
+#endif
+
+TEST(LogTest, MAYBE_Perf) {
   Pathname path;
-  EXPECT_TRUE(Filesystem::GetTemporaryFolder(path, true, NULL));
+  EXPECT_TRUE(Filesystem::GetTemporaryFolder(path, true, nullptr));
   path.SetPathname(Filesystem::TempFilename(path, "ut"));
 
   LogSinkImpl<FileStream> stream;
-  EXPECT_TRUE(stream.Open(path.pathname(), "wb", NULL));
+  EXPECT_TRUE(stream.Open(path.pathname(), "wb", nullptr));
   stream.DisableBuffering();
   LogMessage::AddLogToStream(&stream, LS_SENSITIVE);
 
-  uint32 start = Time(), finish;
+  int64_t start = TimeMillis(), finish;
   std::string message('X', 80);
   for (int i = 0; i < 1000; ++i) {
     LOG(LS_SENSITIVE) << message;
   }
-  finish = Time();
+  finish = TimeMillis();
 
   LogMessage::RemoveLogToStream(&stream);
   stream.Close();
   Filesystem::DeleteFile(path);
 
-  LOG(LS_INFO) << "Average log time: " << TimeDiff(finish, start) << " us";
+  LOG(LS_INFO) << "Average log time: " << TimeDiff(finish, start) << " ms";
 }
 
 }  // namespace rtc

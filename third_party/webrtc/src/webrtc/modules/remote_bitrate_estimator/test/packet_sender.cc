@@ -15,7 +15,7 @@
 #include <sstream>
 
 #include "webrtc/base/checks.h"
-#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/modules/include/module_common_types.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/metric_recorder.h"
 
@@ -156,14 +156,9 @@ uint32_t VideoSender::TargetBitrateKbps() {
 PacedVideoSender::PacedVideoSender(PacketProcessorListener* listener,
                                    VideoSource* source,
                                    BandwidthEstimatorType estimator)
-    : VideoSender(listener, source, estimator),
-      pacer_(&clock_,
-             this,
-             source->bits_per_second() / 1000,
-             PacedSender::kDefaultPaceMultiplier * source->bits_per_second() /
-                 1000,
-             0) {
+    : VideoSender(listener, source, estimator), pacer_(&clock_, this, nullptr) {
   modules_.push_back(&pacer_);
+  pacer_.SetEstimatedBitrate(source->bits_per_second());
 }
 
 PacedVideoSender::~PacedVideoSender() {
@@ -209,7 +204,7 @@ void PacedVideoSender::RunFor(int64_t time_ms, Packets* in_out) {
     if (!generated_packets.empty()) {
       for (Packet* packet : generated_packets) {
         MediaPacket* media_packet = static_cast<MediaPacket*>(packet);
-        pacer_.SendPacket(
+        pacer_.InsertPacket(
             PacedSender::kNormalPriority, media_packet->header().ssrc,
             media_packet->header().sequenceNumber, media_packet->send_time_ms(),
             media_packet->payload_size(), false);
@@ -271,8 +266,6 @@ void PacedVideoSender::QueuePackets(Packets* batch,
   }
   Packets to_transfer;
   to_transfer.splice(to_transfer.begin(), queue_, queue_.begin(), it);
-  for (Packet* packet : to_transfer)
-    packet->set_paced(true);
   bwe_->OnPacketsSent(to_transfer);
   batch->merge(to_transfer, DereferencingComparator<Packet>);
 }
@@ -280,7 +273,8 @@ void PacedVideoSender::QueuePackets(Packets* batch,
 bool PacedVideoSender::TimeToSendPacket(uint32_t ssrc,
                                         uint16_t sequence_number,
                                         int64_t capture_time_ms,
-                                        bool retransmission) {
+                                        bool retransmission,
+                                        const PacedPacketInfo& pacing_info) {
   for (Packets::iterator it = pacer_queue_.begin(); it != pacer_queue_.end();
        ++it) {
     MediaPacket* media_packet = static_cast<MediaPacket*>(*it);
@@ -302,7 +296,8 @@ bool PacedVideoSender::TimeToSendPacket(uint32_t ssrc,
   return false;
 }
 
-size_t PacedVideoSender::TimeToSendPadding(size_t bytes) {
+size_t PacedVideoSender::TimeToSendPadding(size_t bytes,
+                                           const PacedPacketInfo& pacing_info) {
   return 0;
 }
 
@@ -310,9 +305,7 @@ void PacedVideoSender::OnNetworkChanged(uint32_t target_bitrate_bps,
                                         uint8_t fraction_lost,
                                         int64_t rtt) {
   VideoSender::OnNetworkChanged(target_bitrate_bps, fraction_lost, rtt);
-  pacer_.UpdateBitrate(
-      target_bitrate_bps / 1000,
-      PacedSender::kDefaultPaceMultiplier * target_bitrate_bps / 1000, 0);
+  pacer_.SetEstimatedBitrate(target_bitrate_bps);
 }
 
 const int kNoLimit = std::numeric_limits<int>::max();

@@ -8,18 +8,19 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
+
 #include "webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
 
 #include <X11/extensions/Xfixes.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
-#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/base/logging.h"
 #include "webrtc/modules/desktop_capture/desktop_capture_options.h"
 #include "webrtc/modules/desktop_capture/desktop_frame.h"
 #include "webrtc/modules/desktop_capture/mouse_cursor.h"
 #include "webrtc/modules/desktop_capture/x11/x_error_trap.h"
-#include "webrtc/system_wrappers/interface/logging.h"
 
 namespace {
 
@@ -61,7 +62,7 @@ class MouseCursorMonitorX11 : public MouseCursorMonitor,
                               public SharedXDisplay::XEventHandler {
  public:
   MouseCursorMonitorX11(const DesktopCaptureOptions& options, Window window);
-  virtual ~MouseCursorMonitorX11();
+  ~MouseCursorMonitorX11() override;
 
   void Init(Callback* callback, Mode mode) override;
   void Capture() override;
@@ -84,7 +85,7 @@ class MouseCursorMonitorX11 : public MouseCursorMonitor,
   int xfixes_event_base_;
   int xfixes_error_base_;
 
-  rtc::scoped_ptr<MouseCursor> cursor_shape_;
+  std::unique_ptr<MouseCursor> cursor_shape_;
 };
 
 MouseCursorMonitorX11::MouseCursorMonitorX11(
@@ -96,7 +97,30 @@ MouseCursorMonitorX11::MouseCursorMonitorX11(
       window_(window),
       have_xfixes_(false),
       xfixes_event_base_(-1),
-      xfixes_error_base_(-1) {}
+      xfixes_error_base_(-1) {
+  // Set a default initial cursor shape in case XFixes is not present.
+  const int kSize = 5;
+  std::unique_ptr<DesktopFrame> default_cursor(
+      new BasicDesktopFrame(DesktopSize(kSize, kSize)));
+  const uint8_t pixels[kSize * kSize] = {
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xff, 0xff, 0xff, 0x00,
+    0x00, 0xff, 0xff, 0xff, 0x00,
+    0x00, 0xff, 0xff, 0xff, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00
+  };
+  uint8_t* ptr = default_cursor->data();
+  for (int y = 0; y < kSize; ++y) {
+    for (int x = 0; x < kSize; ++x) {
+      *ptr++ = pixels[kSize * y + x];
+      *ptr++ = pixels[kSize * y + x];
+      *ptr++ = pixels[kSize * y + x];
+      *ptr++ = 0xff;
+    }
+  }
+  DesktopVector hotspot(2, 2);
+  cursor_shape_.reset(new MouseCursor(default_cursor.release(), hotspot));
+}
 
 MouseCursorMonitorX11::~MouseCursorMonitorX11() {
   if (have_xfixes_) {
@@ -107,8 +131,8 @@ MouseCursorMonitorX11::~MouseCursorMonitorX11() {
 
 void MouseCursorMonitorX11::Init(Callback* callback, Mode mode) {
   // Init can be called only once per instance of MouseCursorMonitor.
-  assert(!callback_);
-  assert(callback);
+  RTC_DCHECK(!callback_);
+  RTC_DCHECK(callback);
 
   callback_ = callback;
   mode_ = mode;
@@ -128,7 +152,7 @@ void MouseCursorMonitorX11::Init(Callback* callback, Mode mode) {
 }
 
 void MouseCursorMonitorX11::Capture() {
-  assert(callback_);
+  RTC_DCHECK(callback_);
 
   // Process X11 events in case XFixes has sent cursor notification.
   x_display_->ProcessPendingXEvents();
@@ -161,6 +185,21 @@ void MouseCursorMonitorX11::Capture() {
           (window_ == root_window || child_window != None) ? INSIDE : OUTSIDE;
     }
 
+    // As the comments to GetTopLevelWindow() above indicate, in window capture,
+    // the cursor position capture happens in |window_|, while the frame catpure
+    // happens in |child_window|. These two windows are not alwyas same, as
+    // window manager may add some decorations to the |window_|. So translate
+    // the coordinate in |window_| to the coordinate space of |child_window|.
+    if (window_ != root_window && state == INSIDE) {
+      int translated_x, translated_y;
+      Window unused;
+      if (XTranslateCoordinates(display(), window_, child_window, win_x, win_y,
+                                &translated_x, &translated_y, &unused)) {
+        win_x = translated_x;
+        win_y = translated_y;
+      }
+    }
+
     callback_->OnMouseCursorPosition(state,
                                      webrtc::DesktopVector(win_x, win_y));
   }
@@ -180,7 +219,7 @@ bool MouseCursorMonitorX11::HandleXEvent(const XEvent& event) {
 }
 
 void MouseCursorMonitorX11::CaptureCursor() {
-  assert(have_xfixes_);
+  RTC_DCHECK(have_xfixes_);
 
   XFixesCursorImage* img;
   {
@@ -190,7 +229,7 @@ void MouseCursorMonitorX11::CaptureCursor() {
        return;
    }
 
-   rtc::scoped_ptr<DesktopFrame> image(
+   std::unique_ptr<DesktopFrame> image(
        new BasicDesktopFrame(DesktopSize(img->width, img->height)));
 
   // Xlib stores 32-bit data in longs, even if longs are 64-bits long.

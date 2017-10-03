@@ -13,8 +13,10 @@
 
 #if defined(WEBRTC_INCLUDE_INTERNAL_AUDIO_DEVICE)
 
+#include <memory>
+
 #include "webrtc/base/checks.h"
-#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/base/criticalsection.h"
 #include "webrtc/modules/audio_device/audio_device_buffer.h"
 #include "webrtc/modules/audio_device/include/audio_device.h"
 
@@ -22,7 +24,6 @@ namespace webrtc {
 
 class AudioDeviceGeneric;
 class AudioManager;
-class CriticalSectionWrapper;
 
 class AudioDeviceModuleImpl : public AudioDeviceModule {
  public:
@@ -41,15 +42,10 @@ class AudioDeviceModuleImpl : public AudioDeviceModule {
   int32_t AttachAudioBuffer();
 
   AudioDeviceModuleImpl(const int32_t id, const AudioLayer audioLayer);
-  virtual ~AudioDeviceModuleImpl();
+  ~AudioDeviceModuleImpl() override;
 
   int64_t TimeUntilNextProcess() override;
-  int32_t Process() override;
-
-  // Factory methods (resource allocation/deallocation)
-  static AudioDeviceModule* Create(
-      const int32_t id,
-      const AudioLayer audioLayer = kPlatformDefaultAudio);
+  void Process() override;
 
   // Retrieve the currently utilized audio layer
   int32_t ActiveAudioLayer(AudioLayer* audioLayer) const override;
@@ -182,7 +178,6 @@ class AudioDeviceModuleImpl : public AudioDeviceModule {
   int32_t SetLoudspeakerStatus(bool enable) override;
   int32_t GetLoudspeakerStatus(bool* enabled) const override;
 
-  bool BuiltInAECIsEnabled() const override;
   bool BuiltInAECIsAvailable() const override;
   int32_t EnableBuiltInAEC(bool enable) override;
   bool BuiltInAGCIsAvailable() const override;
@@ -190,8 +185,10 @@ class AudioDeviceModuleImpl : public AudioDeviceModule {
   bool BuiltInNSIsAvailable() const override;
   int32_t EnableBuiltInNS(bool enable) override;
 
+#if defined(WEBRTC_IOS)
   int GetPlayoutAudioParameters(AudioParameters* params) const override;
   int GetRecordAudioParameters(AudioParameters* params) const override;
+#endif  // WEBRTC_IOS
 
   int32_t Id() { return _id; }
 #if defined(WEBRTC_ANDROID)
@@ -206,9 +203,9 @@ class AudioDeviceModuleImpl : public AudioDeviceModule {
   PlatformType Platform() const;
   AudioLayer PlatformAudioLayer() const;
 
-  CriticalSectionWrapper& _critSect;
-  CriticalSectionWrapper& _critSectEventCb;
-  CriticalSectionWrapper& _critSectAudioCb;
+  rtc::CriticalSection _critSect;
+  rtc::CriticalSection _critSectEventCb;
+  rtc::CriticalSection _critSectAudioCb;
 
   AudioDeviceObserver* _ptrCbAudioDeviceObserver;
 
@@ -216,7 +213,7 @@ class AudioDeviceModuleImpl : public AudioDeviceModule {
 
   AudioDeviceBuffer _audioDeviceBuffer;
 #if defined(WEBRTC_ANDROID)
-  rtc::scoped_ptr<AudioManager> _audioManagerAndroid;
+  std::unique_ptr<AudioManager> _audioManagerAndroid;
 #endif
   int32_t _id;
   AudioLayer _platformAudioLayer;

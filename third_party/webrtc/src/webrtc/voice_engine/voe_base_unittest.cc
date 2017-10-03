@@ -10,8 +10,8 @@
 
 #include "webrtc/voice_engine/include/voe_base.h"
 
-#include "testing/gtest/include/gtest/gtest.h"
 #include "webrtc/modules/audio_processing/include/audio_processing.h"
+#include "webrtc/test/gtest.h"
 #include "webrtc/voice_engine/channel_manager.h"
 #include "webrtc/voice_engine/shared_data.h"
 #include "webrtc/voice_engine/voice_engine_fixture.h"
@@ -78,4 +78,10 @@ TEST_F(VoEBaseTest, AssociateSendChannel) {
   EXPECT_EQ(1, reference.use_count());
 }
 
+TEST_F(VoEBaseTest, GetVersion) {
+  char v1[1024] = {75};
+  base_->GetVersion(v1);
+  std::string v2 = VoiceEngine::GetVersionString() + "\n";
+  EXPECT_EQ(v2, v1);
+}
 }  // namespace webrtc

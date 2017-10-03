@@ -15,7 +15,7 @@
 #include <string>
 
 #include "webrtc/base/constructormagic.h"
-#include "webrtc/modules/audio_coding/neteq/interface/neteq.h"
+#include "webrtc/modules/audio_coding/neteq/include/neteq.h"
 #include "webrtc/typedefs.h"
 
 namespace webrtc {
@@ -44,6 +44,14 @@ class StatisticsCalculator {
   // Reports that |num_samples| samples were produced through expansion, and
   // that the expansion produced only noise samples.
   void ExpandedNoiseSamples(size_t num_samples);
+
+  // Corrects the statistics for number of samples produced through non-noise
+  // expansion by adding |num_samples| (negative or positive) to the current
+  // value. The result is capped to zero to avoid negative values.
+  void ExpandedVoiceSamplesCorrection(int num_samples);
+
+  // Same as ExpandedVoiceSamplesCorrection but for noise samples.
+  void ExpandedNoiseSamplesCorrection(int num_samples);
 
   // Reports that |num_samples| samples were produced through preemptive
   // expansion.

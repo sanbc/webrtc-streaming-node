@@ -11,19 +11,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <memory>
 #include <string>
 
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/common_video/libyuv/include/webrtc_libyuv.h"
+#include "webrtc/tools/frame_editing/frame_editing_lib.h"
 #include "webrtc/typedefs.h"
-
-using std::string;
 
 namespace webrtc {
 
-int EditFrames(const string& in_path, int width, int height,
+int EditFrames(const std::string& in_path, int width, int height,
                int first_frame_to_process, int interval,
-               int last_frame_to_process, const string& out_path) {
+               int last_frame_to_process, const std::string& out_path) {
   if (last_frame_to_process < first_frame_to_process) {
     fprintf(stderr, "The set of frames to cut is empty! (l < f)\n");
     return -10;
@@ -36,9 +35,9 @@ int EditFrames(const string& in_path, int width, int height,
   }
 
   // Frame size of I420.
-  size_t frame_length = CalcBufferSize(kI420, width, height);
+  size_t frame_length = CalcBufferSize(VideoType::kI420, width, height);
 
-  rtc::scoped_ptr<uint8_t[]> temp_buffer(new uint8_t[frame_length]);
+  std::unique_ptr<uint8_t[]> temp_buffer(new uint8_t[frame_length]);
 
   FILE* out_fid = fopen(out_path.c_str(), "wb");
 

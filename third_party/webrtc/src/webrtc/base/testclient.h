@@ -11,8 +11,10 @@
 #ifndef WEBRTC_BASE_TESTCLIENT_H_
 #define WEBRTC_BASE_TESTCLIENT_H_
 
+#include <memory>
 #include <vector>
 #include "webrtc/base/asyncudpsocket.h"
+#include "webrtc/base/constructormagic.h"
 #include "webrtc/base/criticalsection.h"
 
 namespace rtc {
@@ -23,13 +25,17 @@ class TestClient : public sigslot::has_slots<> {
  public:
   // Records the contents of a packet that was received.
   struct Packet {
-    Packet(const SocketAddress& a, const char* b, size_t s);
+    Packet(const SocketAddress& a,
+           const char* b,
+           size_t s,
+           const PacketTime& packet_time);
     Packet(const Packet& p);
     virtual ~Packet();
 
     SocketAddress addr;
     char*  buf;
     size_t size;
+    PacketTime packet_time;
   };
 
   // Default timeout for NextPacket reads.
@@ -37,7 +43,7 @@ class TestClient : public sigslot::has_slots<> {
 
   // Creates a client that will send and receive with the given socket and
   // will post itself messages with the given thread.
-  explicit TestClient(AsyncPacketSocket* socket);
+  explicit TestClient(std::unique_ptr<AsyncPacketSocket> socket);
   ~TestClient() override;
 
   SocketAddress address() const { return socket_->GetLocalAddress(); }
@@ -57,10 +63,9 @@ class TestClient : public sigslot::has_slots<> {
   // Sends using the clients socket to the given destination.
   int SendTo(const char* buf, size_t size, const SocketAddress& dest);
 
-  // Returns the next packet received by the client or 0 if none is received
-  // within the specified timeout. The caller must delete the packet
-  // when done with it.
-  Packet* NextPacket(int timeout_ms);
+  // Returns the next packet received by the client or null if none is received
+  // within the specified timeout.
+  std::unique_ptr<Packet> NextPacket(int timeout_ms);
 
   // Checks that the next packet has the given contents. Returns the remote
   // address that the packet was sent from.
@@ -72,7 +77,10 @@ class TestClient : public sigslot::has_slots<> {
   int GetError();
   int SetOption(Socket::Option opt, int value);
 
-  bool ready_to_send() const;
+  bool ready_to_send() const { return ready_to_send_count() > 0; }
+
+  // How many times SignalReadyToSend has been fired.
+  int ready_to_send_count() const { return ready_to_send_count_; }
 
  private:
   // Timeout for reads when no packet is expected.
@@ -84,11 +92,13 @@ class TestClient : public sigslot::has_slots<> {
                 const SocketAddress& remote_addr,
                 const PacketTime& packet_time);
   void OnReadyToSend(AsyncPacketSocket* socket);
+  bool CheckTimestamp(int64_t packet_timestamp);
 
   CriticalSection crit_;
-  AsyncPacketSocket* socket_;
-  std::vector<Packet*>* packets_;
-  bool ready_to_send_;
+  std::unique_ptr<AsyncPacketSocket> socket_;
+  std::vector<std::unique_ptr<Packet>> packets_;
+  int ready_to_send_count_ = 0;
+  int64_t prev_packet_timestamp_;
   RTC_DISALLOW_COPY_AND_ASSIGN(TestClient);
 };
 

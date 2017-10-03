@@ -13,11 +13,12 @@
 
 #include <list>
 #include <limits>
+#include <memory>
+#include <set>
 #include <string>
 
 #include "webrtc/base/constructormagic.h"
-#include "webrtc/base/scoped_ptr.h"
-#include "webrtc/modules/interface/module.h"
+#include "webrtc/modules/include/module.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe_test_framework.h"
 
@@ -90,7 +91,7 @@ class VideoSender : public PacketSender, public BitrateObserver {
                                          Packets* generated);
 
   VideoSource* source_;
-  rtc::scoped_ptr<BweSender> bwe_;
+  std::unique_ptr<BweSender> bwe_;
   int64_t start_of_run_ms_;
   std::list<Module*> modules_;
 
@@ -99,7 +100,7 @@ class VideoSender : public PacketSender, public BitrateObserver {
   RTC_DISALLOW_COPY_AND_ASSIGN(VideoSender);
 };
 
-class PacedVideoSender : public VideoSender, public PacedSender::Callback {
+class PacedVideoSender : public VideoSender, public PacedSender::PacketSender {
  public:
   PacedVideoSender(PacketProcessorListener* listener,
                    VideoSource* source,
@@ -112,8 +113,10 @@ class PacedVideoSender : public VideoSender, public PacedSender::Callback {
   bool TimeToSendPacket(uint32_t ssrc,
                         uint16_t sequence_number,
                         int64_t capture_time_ms,
-                        bool retransmission) override;
-  size_t TimeToSendPadding(size_t bytes) override;
+                        bool retransmission,
+                        const PacedPacketInfo& pacing_info) override;
+  size_t TimeToSendPadding(size_t bytes,
+                           const PacedPacketInfo& pacing_info) override;
 
   // Implements BitrateObserver.
   void OnNetworkChanged(uint32_t target_bitrate_bps,
@@ -149,7 +152,7 @@ class TcpSender : public PacketSender {
  private:
   struct InFlight {
    public:
-    InFlight(const MediaPacket& packet)
+    explicit InFlight(const MediaPacket& packet)
         : sequence_number(packet.header().sequenceNumber),
           time_ms(packet.send_time_ms()) {}
 

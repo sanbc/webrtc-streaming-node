@@ -12,7 +12,7 @@
 #define WEBRTC_MODULES_AUDIO_CODING_NETEQ_TOOLS_AUDIO_SINK_H_
 
 #include "webrtc/base/constructormagic.h"
-#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/modules/include/module_common_types.h"
 #include "webrtc/typedefs.h"
 
 namespace webrtc {
@@ -47,10 +47,7 @@ class AudioSinkFork : public AudioSink {
   AudioSinkFork(AudioSink* left, AudioSink* right)
       : left_sink_(left), right_sink_(right) {}
 
-  bool WriteArray(const int16_t* audio, size_t num_samples) override {
-    return left_sink_->WriteArray(audio, num_samples) &&
-           right_sink_->WriteArray(audio, num_samples);
-  }
+  bool WriteArray(const int16_t* audio, size_t num_samples) override;
 
  private:
   AudioSink* left_sink_;
@@ -58,6 +55,17 @@ class AudioSinkFork : public AudioSink {
 
   RTC_DISALLOW_COPY_AND_ASSIGN(AudioSinkFork);
 };
+
+// An AudioSink implementation that does nothing.
+class VoidAudioSink : public AudioSink {
+ public:
+  VoidAudioSink() = default;
+  bool WriteArray(const int16_t* audio, size_t num_samples) override;
+
+ private:
+  RTC_DISALLOW_COPY_AND_ASSIGN(VoidAudioSink);
+};
+
 }  // namespace test
 }  // namespace webrtc
 #endif  // WEBRTC_MODULES_AUDIO_CODING_NETEQ_TOOLS_AUDIO_SINK_H_

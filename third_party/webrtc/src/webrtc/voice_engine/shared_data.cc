@@ -11,8 +11,7 @@
 #include "webrtc/voice_engine/shared_data.h"
 
 #include "webrtc/modules/audio_processing/include/audio_processing.h"
-#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
-#include "webrtc/system_wrappers/interface/trace.h"
+#include "webrtc/system_wrappers/include/trace.h"
 #include "webrtc/voice_engine/channel.h"
 #include "webrtc/voice_engine/output_mixer.h"
 #include "webrtc/voice_engine/transmit_mixer.h"
@@ -23,25 +22,21 @@ namespace voe {
 
 static int32_t _gInstanceCounter = 0;
 
-SharedData::SharedData(const Config& config)
+SharedData::SharedData()
     : _instanceId(++_gInstanceCounter),
-      _apiCritPtr(CriticalSectionWrapper::CreateCriticalSection()),
-      _channelManager(_gInstanceCounter, config),
+      _channelManager(_gInstanceCounter),
       _engineStatistics(_gInstanceCounter),
       _audioDevicePtr(NULL),
-      _moduleProcessThreadPtr(ProcessThread::Create("VoiceProcessThread")) {
-    Trace::CreateTrace();
-    if (OutputMixer::Create(_outputMixerPtr, _gInstanceCounter) == 0)
-    {
-        _outputMixerPtr->SetEngineInformation(_engineStatistics);
-    }
-    if (TransmitMixer::Create(_transmitMixerPtr, _gInstanceCounter) == 0)
-    {
-        _transmitMixerPtr->SetEngineInformation(*_moduleProcessThreadPtr,
-                                                _engineStatistics,
-                                                _channelManager);
-    }
-    _audioDeviceLayer = AudioDeviceModule::kPlatformDefaultAudio;
+      _moduleProcessThreadPtr(ProcessThread::Create("VoiceProcessThread")),
+      encoder_queue_("AudioEncoderQueue") {
+  Trace::CreateTrace();
+  if (OutputMixer::Create(_outputMixerPtr, _gInstanceCounter) == 0) {
+    _outputMixerPtr->SetEngineInformation(_engineStatistics);
+  }
+  if (TransmitMixer::Create(_transmitMixerPtr, _gInstanceCounter) == 0) {
+    _transmitMixerPtr->SetEngineInformation(*_moduleProcessThreadPtr,
+                                            _engineStatistics, _channelManager);
+  }
 }
 
 SharedData::~SharedData()
@@ -51,19 +46,18 @@ SharedData::~SharedData()
     if (_audioDevicePtr) {
         _audioDevicePtr->Release();
     }
-    delete _apiCritPtr;
     _moduleProcessThreadPtr->Stop();
     Trace::ReturnTrace();
 }
 
-void SharedData::set_audio_device(AudioDeviceModule* audio_device)
-{
-    // AddRef first in case the pointers are equal.
-    if (audio_device)
-      audio_device->AddRef();
-    if (_audioDevicePtr)
-      _audioDevicePtr->Release();
-    _audioDevicePtr = audio_device;
+rtc::TaskQueue* SharedData::encoder_queue() {
+  RTC_DCHECK_RUN_ON(&construction_thread_);
+  return &encoder_queue_;
+}
+
+void SharedData::set_audio_device(
+    const rtc::scoped_refptr<AudioDeviceModule>& audio_device) {
+  _audioDevicePtr = audio_device;
 }
 
 void SharedData::set_audio_processing(AudioProcessing* audioproc) {

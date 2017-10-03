@@ -8,12 +8,16 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/modules/audio_coding/codecs/g722/include/audio_encoder_g722.h"
+#include "webrtc/modules/audio_coding/codecs/g722/audio_encoder_g722.h"
+
+#include <algorithm>
 
 #include <limits>
 #include "webrtc/base/checks.h"
+#include "webrtc/base/safe_conversions.h"
+#include "webrtc/base/string_to_number.h"
 #include "webrtc/common_types.h"
-#include "webrtc/modules/audio_coding/codecs/g722/include/g722_interface.h"
+#include "webrtc/modules/audio_coding/codecs/g722/g722_interface.h"
 
 namespace webrtc {
 
@@ -26,6 +30,22 @@ AudioEncoderG722::Config CreateConfig(const CodecInst& codec_inst) {
   config.num_channels = codec_inst.channels;
   config.frame_size_ms = codec_inst.pacsize / 16;
   config.payload_type = codec_inst.pltype;
+  return config;
+}
+
+AudioEncoderG722::Config CreateConfig(int payload_type,
+                                      const SdpAudioFormat& format) {
+  AudioEncoderG722::Config config;
+  config.payload_type = payload_type;
+  config.num_channels = format.num_channels;
+  auto ptime_iter = format.parameters.find("ptime");
+  if (ptime_iter != format.parameters.end()) {
+    auto ptime = rtc::StringToNumber<int>(ptime_iter->second);
+    if (ptime && *ptime > 0) {
+      const int whole_packets = *ptime / 10;
+      config.frame_size_ms = std::max(10, std::min(whole_packets * 10, 60));
+    }
+  }
   return config;
 }
 
@@ -48,7 +68,7 @@ AudioEncoderG722::AudioEncoderG722(const Config& config)
   RTC_CHECK(config.IsOk());
   const size_t samples_per_channel =
       kSampleRateHz / 100 * num_10ms_frames_per_packet_;
-  for (int i = 0; i < num_channels_; ++i) {
+  for (size_t i = 0; i < num_channels_; ++i) {
     encoders_[i].speech_buffer.reset(new int16_t[samples_per_channel]);
     encoders_[i].encoded_buffer.SetSize(samples_per_channel / 2);
   }
@@ -58,17 +78,29 @@ AudioEncoderG722::AudioEncoderG722(const Config& config)
 AudioEncoderG722::AudioEncoderG722(const CodecInst& codec_inst)
     : AudioEncoderG722(CreateConfig(codec_inst)) {}
 
+AudioEncoderG722::AudioEncoderG722(int payload_type,
+                                   const SdpAudioFormat& format)
+    : AudioEncoderG722(CreateConfig(payload_type, format)) {}
+
 AudioEncoderG722::~AudioEncoderG722() = default;
 
-size_t AudioEncoderG722::MaxEncodedBytes() const {
-  return SamplesPerChannel() / 2 * num_channels_;
+rtc::Optional<AudioCodecInfo> AudioEncoderG722::QueryAudioEncoder(
+    const SdpAudioFormat& format) {
+  if (STR_CASE_CMP(format.name.c_str(), GetPayloadName()) == 0) {
+    Config config = CreateConfig(0, format);
+    if (format.clockrate_hz == 8000 && config.IsOk()) {
+      return rtc::Optional<AudioCodecInfo>(
+          {rtc::dchecked_cast<int>(kSampleRateHz), config.num_channels, 64000});
+    }
+  }
+  return rtc::Optional<AudioCodecInfo>();
 }
 
 int AudioEncoderG722::SampleRateHz() const {
   return kSampleRateHz;
 }
 
-int AudioEncoderG722::NumChannels() const {
+size_t AudioEncoderG722::NumChannels() const {
   return num_channels_;
 }
 
@@ -88,23 +120,26 @@ size_t AudioEncoderG722::Max10MsFramesInAPacket() const {
 
 int AudioEncoderG722::GetTargetBitrate() const {
   // 4 bits/sample, 16000 samples/s/channel.
-  return 64000 * NumChannels();
+  return static_cast<int>(64000 * NumChannels());
 }
 
-AudioEncoder::EncodedInfo AudioEncoderG722::EncodeInternal(
-    uint32_t rtp_timestamp,
-    const int16_t* audio,
-    size_t max_encoded_bytes,
-    uint8_t* encoded) {
-  RTC_CHECK_GE(max_encoded_bytes, MaxEncodedBytes());
+void AudioEncoderG722::Reset() {
+  num_10ms_frames_buffered_ = 0;
+  for (size_t i = 0; i < num_channels_; ++i)
+    RTC_CHECK_EQ(0, WebRtcG722_EncoderInit(encoders_[i].encoder));
+}
 
+AudioEncoder::EncodedInfo AudioEncoderG722::EncodeImpl(
+    uint32_t rtp_timestamp,
+    rtc::ArrayView<const int16_t> audio,
+    rtc::Buffer* encoded) {
   if (num_10ms_frames_buffered_ == 0)
     first_timestamp_in_buffer_ = rtp_timestamp;
 
   // Deinterleave samples and save them in each channel's buffer.
   const size_t start = kSampleRateHz / 100 * num_10ms_frames_buffered_;
   for (size_t i = 0; i < kSampleRateHz / 100; ++i)
-    for (int j = 0; j < num_channels_; ++j)
+    for (size_t j = 0; j < num_channels_; ++j)
       encoders_[j].speech_buffer[start + i] = audio[i * num_channels_ + j];
 
   // If we don't yet have enough samples for a packet, we're done for now.
@@ -116,37 +151,38 @@ AudioEncoder::EncodedInfo AudioEncoderG722::EncodeInternal(
   RTC_CHECK_EQ(num_10ms_frames_buffered_, num_10ms_frames_per_packet_);
   num_10ms_frames_buffered_ = 0;
   const size_t samples_per_channel = SamplesPerChannel();
-  for (int i = 0; i < num_channels_; ++i) {
-    const size_t encoded = WebRtcG722_Encode(
+  for (size_t i = 0; i < num_channels_; ++i) {
+    const size_t bytes_encoded = WebRtcG722_Encode(
         encoders_[i].encoder, encoders_[i].speech_buffer.get(),
         samples_per_channel, encoders_[i].encoded_buffer.data());
-    RTC_CHECK_EQ(encoded, samples_per_channel / 2);
+    RTC_CHECK_EQ(bytes_encoded, samples_per_channel / 2);
   }
 
-  // Interleave the encoded bytes of the different channels. Each separate
-  // channel and the interleaved stream encodes two samples per byte, most
-  // significant half first.
-  for (size_t i = 0; i < samples_per_channel / 2; ++i) {
-    for (int j = 0; j < num_channels_; ++j) {
-      uint8_t two_samples = encoders_[j].encoded_buffer.data()[i];
-      interleave_buffer_.data()[j] = two_samples >> 4;
-      interleave_buffer_.data()[num_channels_ + j] = two_samples & 0xf;
-    }
-    for (int j = 0; j < num_channels_; ++j)
-      encoded[i * num_channels_ + j] = interleave_buffer_.data()[2 * j] << 4 |
-                                       interleave_buffer_.data()[2 * j + 1];
-  }
+  const size_t bytes_to_encode = samples_per_channel / 2 * num_channels_;
   EncodedInfo info;
-  info.encoded_bytes = samples_per_channel / 2 * num_channels_;
+  info.encoded_bytes = encoded->AppendData(
+      bytes_to_encode, [&] (rtc::ArrayView<uint8_t> encoded) {
+        // Interleave the encoded bytes of the different channels. Each separate
+        // channel and the interleaved stream encodes two samples per byte, most
+        // significant half first.
+        for (size_t i = 0; i < samples_per_channel / 2; ++i) {
+          for (size_t j = 0; j < num_channels_; ++j) {
+            uint8_t two_samples = encoders_[j].encoded_buffer.data()[i];
+            interleave_buffer_.data()[j] = two_samples >> 4;
+            interleave_buffer_.data()[num_channels_ + j] = two_samples & 0xf;
+          }
+          for (size_t j = 0; j < num_channels_; ++j)
+            encoded[i * num_channels_ + j] =
+                interleave_buffer_.data()[2 * j] << 4 |
+                interleave_buffer_.data()[2 * j + 1];
+        }
+
+        return bytes_to_encode;
+      });
   info.encoded_timestamp = first_timestamp_in_buffer_;
   info.payload_type = payload_type_;
+  info.encoder_type = CodecType::kG722;
   return info;
-}
-
-void AudioEncoderG722::Reset() {
-  num_10ms_frames_buffered_ = 0;
-  for (int i = 0; i < num_channels_; ++i)
-    RTC_CHECK_EQ(0, WebRtcG722_EncoderInit(encoders_[i].encoder));
 }
 
 AudioEncoderG722::EncoderState::EncoderState() {

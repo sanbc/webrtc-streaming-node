@@ -9,53 +9,43 @@
  */
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
-#include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gtest/include/gtest/gtest.h"
+#include "webrtc/base/rate_limiter.h"
 #include "webrtc/common_types.h"
-#include "webrtc/modules/rtp_rtcp/interface/receive_statistics.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
+#include "webrtc/modules/rtp_rtcp/include/receive_statistics.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_rtcp.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "webrtc/modules/rtp_rtcp/source/rtp_receiver_audio.h"
 #include "webrtc/modules/rtp_rtcp/test/testAPI/test_api.h"
+#include "webrtc/test/gmock.h"
+#include "webrtc/test/gtest.h"
 
-using namespace webrtc;
-
-const uint64_t kTestPictureId = 12345678;
-const uint8_t kSliPictureId = 156;
+namespace webrtc {
+namespace {
 
 class RtcpCallback : public RtcpIntraFrameObserver {
  public:
   void SetModule(RtpRtcp* module) {
     _rtpRtcpModule = module;
-  };
+  }
   virtual void OnRTCPPacketTimeout(const int32_t id) {
   }
   virtual void OnLipSyncUpdate(const int32_t id,
-                               const int32_t audioVideoOffset) {
-  };
-  virtual void OnReceivedIntraFrameRequest(uint32_t ssrc) {
-  };
-  virtual void OnReceivedSLI(uint32_t ssrc,
-                             uint8_t pictureId) {
-    EXPECT_EQ(kSliPictureId & 0x3f, pictureId);
-  };
-  virtual void OnReceivedRPSI(uint32_t ssrc,
-                              uint64_t pictureId) {
-    EXPECT_EQ(kTestPictureId, pictureId);
-  };
-  virtual void OnLocalSsrcChanged(uint32_t old_ssrc, uint32_t new_ssrc) {};
+                               const int32_t audioVideoOffset) {}
+  virtual void OnReceivedIntraFrameRequest(uint32_t ssrc) {}
+
  private:
   RtpRtcp* _rtpRtcpModule;
 };
 
 class TestRtpFeedback : public NullRtpFeedback {
  public:
-  TestRtpFeedback(RtpRtcp* rtp_rtcp) : rtp_rtcp_(rtp_rtcp) {}
+  explicit TestRtpFeedback(RtpRtcp* rtp_rtcp) : rtp_rtcp_(rtp_rtcp) {}
   virtual ~TestRtpFeedback() {}
 
-  void OnIncomingSSRCChanged(const uint32_t ssrc) override {
+  void OnIncomingSSRCChanged(uint32_t ssrc) override {
     rtp_rtcp_->SetRemoteSSRC(ssrc);
   }
 
@@ -65,7 +55,8 @@ class TestRtpFeedback : public NullRtpFeedback {
 
 class RtpRtcpRtcpTest : public ::testing::Test {
  protected:
-  RtpRtcpRtcpTest() : fake_clock(123456) {
+  RtpRtcpRtcpTest()
+      : fake_clock(123456), retransmission_rate_limiter_(&fake_clock, 1000) {
     test_csrcs.push_back(1234);
     test_csrcs.push_back(2345);
     test_ssrc = 3456;
@@ -90,18 +81,17 @@ class RtpRtcpRtcpTest : public ::testing::Test {
     configuration.receive_statistics = receive_statistics1_.get();
     configuration.outgoing_transport = transport1;
     configuration.intra_frame_callback = myRTCPFeedback1;
+    configuration.retransmission_rate_limiter = &retransmission_rate_limiter_;
 
-    rtp_payload_registry1_.reset(new RTPPayloadRegistry(
-            RTPPayloadStrategy::CreateStrategy(true)));
-    rtp_payload_registry2_.reset(new RTPPayloadRegistry(
-            RTPPayloadStrategy::CreateStrategy(true)));
+    rtp_payload_registry1_.reset(new RTPPayloadRegistry());
+    rtp_payload_registry2_.reset(new RTPPayloadRegistry());
 
     module1 = RtpRtcp::CreateRtpRtcp(configuration);
 
     rtp_feedback1_.reset(new TestRtpFeedback(module1));
 
     rtp_receiver1_.reset(RtpReceiver::CreateAudioReceiver(
-        &fake_clock, NULL, receiver, rtp_feedback1_.get(),
+        &fake_clock, receiver, rtp_feedback1_.get(),
         rtp_payload_registry1_.get()));
 
     configuration.receive_statistics = receive_statistics2_.get();
@@ -113,7 +103,7 @@ class RtpRtcpRtcpTest : public ::testing::Test {
     rtp_feedback2_.reset(new TestRtpFeedback(module2));
 
     rtp_receiver2_.reset(RtpReceiver::CreateAudioReceiver(
-        &fake_clock, NULL, receiver, rtp_feedback2_.get(),
+        &fake_clock, receiver, rtp_feedback2_.get(),
         rtp_payload_registry2_.get()));
 
     transport1->SetSendModule(module2, rtp_payload_registry2_.get(),
@@ -143,26 +133,17 @@ class RtpRtcpRtcpTest : public ::testing::Test {
     memcpy(voice_codec.plname, "PCMU", 5);
 
     EXPECT_EQ(0, module1->RegisterSendPayload(voice_codec));
-    EXPECT_EQ(0, rtp_receiver1_->RegisterReceivePayload(
-        voice_codec.plname,
-        voice_codec.pltype,
-        voice_codec.plfreq,
-        voice_codec.channels,
-        (voice_codec.rate < 0) ? 0 : voice_codec.rate));
+    EXPECT_EQ(0, rtp_receiver1_->RegisterReceivePayload(voice_codec));
     EXPECT_EQ(0, module2->RegisterSendPayload(voice_codec));
-    EXPECT_EQ(0, rtp_receiver2_->RegisterReceivePayload(
-        voice_codec.plname,
-        voice_codec.pltype,
-        voice_codec.plfreq,
-        voice_codec.channels,
-        (voice_codec.rate < 0) ? 0 : voice_codec.rate));
+    EXPECT_EQ(0, rtp_receiver2_->RegisterReceivePayload(voice_codec));
 
     // We need to send one RTP packet to get the RTCP packet to be accepted by
     // the receiving module.
     // send RTP packet with the data "testtest"
     const uint8_t test[9] = "testtest";
-    EXPECT_EQ(0, module1->SendOutgoingData(webrtc::kAudioFrameSpeech, 96,
-                                           0, -1, test, 8));
+    EXPECT_EQ(true,
+              module1->SendOutgoingData(webrtc::kAudioFrameSpeech, 96, 0, -1,
+                                        test, 8, nullptr, nullptr, nullptr));
   }
 
   virtual void TearDown() {
@@ -175,14 +156,14 @@ class RtpRtcpRtcpTest : public ::testing::Test {
     delete receiver;
   }
 
-  rtc::scoped_ptr<TestRtpFeedback> rtp_feedback1_;
-  rtc::scoped_ptr<TestRtpFeedback> rtp_feedback2_;
-  rtc::scoped_ptr<ReceiveStatistics> receive_statistics1_;
-  rtc::scoped_ptr<ReceiveStatistics> receive_statistics2_;
-  rtc::scoped_ptr<RTPPayloadRegistry> rtp_payload_registry1_;
-  rtc::scoped_ptr<RTPPayloadRegistry> rtp_payload_registry2_;
-  rtc::scoped_ptr<RtpReceiver> rtp_receiver1_;
-  rtc::scoped_ptr<RtpReceiver> rtp_receiver2_;
+  std::unique_ptr<TestRtpFeedback> rtp_feedback1_;
+  std::unique_ptr<TestRtpFeedback> rtp_feedback2_;
+  std::unique_ptr<ReceiveStatistics> receive_statistics1_;
+  std::unique_ptr<ReceiveStatistics> receive_statistics2_;
+  std::unique_ptr<RTPPayloadRegistry> rtp_payload_registry1_;
+  std::unique_ptr<RTPPayloadRegistry> rtp_payload_registry2_;
+  std::unique_ptr<RtpReceiver> rtp_receiver1_;
+  std::unique_ptr<RtpReceiver> rtp_receiver2_;
   RtpRtcp* module1;
   RtpRtcp* module2;
   TestRtpReceiver* receiver;
@@ -196,12 +177,8 @@ class RtpRtcpRtcpTest : public ::testing::Test {
   uint16_t test_sequence_number;
   std::vector<uint32_t> test_csrcs;
   SimulatedClock fake_clock;
+  RateLimiter retransmission_rate_limiter_;
 };
-
-TEST_F(RtpRtcpRtcpTest, RTCP_PLI_RPSI) {
-  EXPECT_EQ(0, module1->SendRTCPReferencePictureSelection(kTestPictureId));
-  EXPECT_EQ(0, module1->SendRTCPSliceLossIndication(kSliPictureId));
-}
 
 TEST_F(RtpRtcpRtcpTest, RTCP_CNAME) {
   uint32_t testOfCSRC[webrtc::kRtpCsrcSize];
@@ -266,3 +243,6 @@ TEST_F(RtpRtcpRtcpTest, RemoteRTCPStatRemote) {
   EXPECT_EQ(test_sequence_number, report_blocks[0].extendedHighSeqNum);
   EXPECT_EQ(0u, report_blocks[0].fractionLost);
 }
+
+}  // namespace
+}  // namespace webrtc

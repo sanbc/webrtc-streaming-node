@@ -13,7 +13,8 @@
 
 #include "webrtc/voice_engine/include/voe_base.h"
 
-#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/base/criticalsection.h"
+#include "webrtc/modules/include/module_common_types.h"
 #include "webrtc/voice_engine/shared_data.h"
 
 namespace webrtc {
@@ -28,20 +29,27 @@ class VoEBaseImpl : public VoEBase,
   int DeRegisterVoiceEngineObserver() override;
 
   int Init(AudioDeviceModule* external_adm = nullptr,
-           AudioProcessing* audioproc = nullptr) override;
+           AudioProcessing* audioproc = nullptr,
+           const rtc::scoped_refptr<AudioDecoderFactory>& decoder_factory =
+               nullptr) override;
   AudioProcessing* audio_processing() override {
     return shared_->audio_processing();
+  }
+  AudioDeviceModule* audio_device_module() override {
+    return shared_->audio_device();
+  }
+  voe::TransmitMixer* transmit_mixer() override {
+    return shared_->transmit_mixer();
   }
   int Terminate() override;
 
   int CreateChannel() override;
-  int CreateChannel(const Config& config) override;
+  int CreateChannel(const ChannelConfig& config) override;
   int DeleteChannel(int channel) override;
 
   int StartReceive(int channel) override;
   int StartPlayout(int channel) override;
   int StartSend(int channel) override;
-  int StopReceive(int channel) override;
   int StopPlayout(int channel) override;
   int StopSend(int channel) override;
 
@@ -54,37 +62,41 @@ class VoEBaseImpl : public VoEBase,
   int AssociateSendChannel(int channel, int accociate_send_channel) override;
 
   // AudioTransport
-  int32_t RecordedDataIsAvailable(const void* audioSamples, size_t nSamples,
-                                  size_t nBytesPerSample, uint8_t nChannels,
-                                  uint32_t samplesPerSec, uint32_t totalDelayMS,
-                                  int32_t clockDrift, uint32_t micLevel,
-                                  bool keyPressed,
-                                  uint32_t& newMicLevel) override;
-  int32_t NeedMorePlayData(size_t nSamples, size_t nBytesPerSample,
-                           uint8_t nChannels, uint32_t samplesPerSec,
-                           void* audioSamples, size_t& nSamplesOut,
+  int32_t RecordedDataIsAvailable(const void* audio_data,
+                                  const size_t number_of_frames,
+                                  const size_t bytes_per_sample,
+                                  const size_t number_of_channels,
+                                  const uint32_t sample_rate,
+                                  const uint32_t audio_delay_milliseconds,
+                                  const int32_t clock_drift,
+                                  const uint32_t volume,
+                                  const bool key_pressed,
+                                  uint32_t& new_mic_volume) override;
+  int32_t NeedMorePlayData(const size_t nSamples,
+                           const size_t nBytesPerSample,
+                           const size_t nChannels,
+                           const uint32_t samplesPerSec,
+                           void* audioSamples,
+                           size_t& nSamplesOut,
                            int64_t* elapsed_time_ms,
                            int64_t* ntp_time_ms) override;
-  int OnDataAvailable(const int voe_channels[], int number_of_voe_channels,
-                      const int16_t* audio_data, int sample_rate,
-                      int number_of_channels, size_t number_of_frames,
-                      int audio_delay_milliseconds, int volume,
-                      bool key_pressed, bool need_audio_processing) override;
-  void OnData(int voe_channel, const void* audio_data, int bits_per_sample,
-              int sample_rate, int number_of_channels,
-              size_t number_of_frames) override;
-  void PushCaptureData(int voe_channel, const void* audio_data,
-                       int bits_per_sample, int sample_rate,
-                       int number_of_channels,
+  void PushCaptureData(int voe_channel,
+                       const void* audio_data,
+                       int bits_per_sample,
+                       int sample_rate,
+                       size_t number_of_channels,
                        size_t number_of_frames) override;
-  void PullRenderData(int bits_per_sample, int sample_rate,
-                      int number_of_channels, size_t number_of_frames,
-                      void* audio_data, int64_t* elapsed_time_ms,
+  void PullRenderData(int bits_per_sample,
+                      int sample_rate,
+                      size_t number_of_channels,
+                      size_t number_of_frames,
+                      void* audio_data,
+                      int64_t* elapsed_time_ms,
                       int64_t* ntp_time_ms) override;
 
   // AudioDeviceObserver
-  void OnErrorIsReported(ErrorCode error) override;
-  void OnWarningIsReported(WarningCode warning) override;
+  void OnErrorIsReported(const ErrorCode error) override;
+  void OnWarningIsReported(const WarningCode warning) override;
 
  protected:
   VoEBaseImpl(voe::SharedData* shared);
@@ -97,33 +109,17 @@ class VoEBaseImpl : public VoEBase,
   int32_t StopSend();
   int32_t TerminateInternal();
 
-  // Helper function to process the recorded data with AudioProcessing Module,
-  // demultiplex the data to specific voe channels, encode and send to the
-  // network. When |number_of_VoE_channels| is 0, it will demultiplex the
-  // data to all the existing VoE channels.
-  // It returns new AGC microphone volume or 0 if no volume changes
-  // should be done.
-  int ProcessRecordedDataWithAPM(
-      const int voe_channels[], int number_of_voe_channels,
-      const void* audio_data, uint32_t sample_rate, uint8_t number_of_channels,
-      size_t number_of_frames, uint32_t audio_delay_milliseconds,
-      int32_t clock_drift, uint32_t volume, bool key_pressed);
-
-  void GetPlayoutData(int sample_rate, int number_of_channels,
+  void GetPlayoutData(int sample_rate, size_t number_of_channels,
                       size_t number_of_frames, bool feed_data_to_apm,
                       void* audio_data, int64_t* elapsed_time_ms,
                       int64_t* ntp_time_ms);
 
-  int32_t AddVoEVersion(char* str) const;
-
   // Initialize channel by setting Engine Information then initializing
   // channel.
   int InitializeChannel(voe::ChannelOwner* channel_owner);
-#ifdef WEBRTC_EXTERNAL_TRANSPORT
-  int32_t AddExternalTransportBuild(char* str) const;
-#endif
   VoiceEngineObserver* voiceEngineObserverPtr_;
-  CriticalSectionWrapper& callbackCritSect_;
+  rtc::CriticalSection callbackCritSect_;
+  rtc::scoped_refptr<AudioDecoderFactory> decoder_factory_;
 
   AudioFrame audioFrame_;
   voe::SharedData* shared_;

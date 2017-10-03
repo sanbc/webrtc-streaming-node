@@ -12,8 +12,11 @@
 
 #include <math.h>
 
+#include "libyuv/convert_argb.h"
+#include "webrtc/api/video/i420_buffer.h"
 #include "webrtc/examples/peerconnection/client/defaults.h"
-#include "webrtc/base/common.h"
+#include "webrtc/base/arraysize.h"
+#include "webrtc/base/checks.h"
 #include "webrtc/base/logging.h"
 
 ATOM MainWnd::wnd_class_ = 0;
@@ -76,11 +79,11 @@ MainWnd::MainWnd(const char* server, int port, bool auto_connect,
 }
 
 MainWnd::~MainWnd() {
-  ASSERT(!IsWindow());
+  RTC_DCHECK(!IsWindow());
 }
 
 bool MainWnd::Create() {
-  ASSERT(wnd_ == NULL);
+  RTC_DCHECK(wnd_ == NULL);
   if (!RegisterWindowClass())
     return false;
 
@@ -143,7 +146,7 @@ bool MainWnd::PreTranslateMessage(MSG* msg) {
 }
 
 void MainWnd::SwitchToConnectUI() {
-  ASSERT(IsWindow());
+  RTC_DCHECK(IsWindow());
   LayoutPeerListUI(false);
   ui_ = CONNECT_TO_SERVER;
   LayoutConnectUI(true);
@@ -234,14 +237,14 @@ void MainWnd::OnPaint() {
     int height = abs(bmi.bmiHeader.biHeight);
     int width = bmi.bmiHeader.biWidth;
 
-    const uint8* image = remote_renderer->image();
+    const uint8_t* image = remote_renderer->image();
     if (image != NULL) {
       HDC dc_mem = ::CreateCompatibleDC(ps.hdc);
       ::SetStretchBltMode(dc_mem, HALFTONE);
 
       // Set the map mode so that the ratio will be maintained for us.
       HDC all_dc[] = { ps.hdc, dc_mem };
-      for (int i = 0; i < ARRAY_SIZE(all_dc); ++i) {
+      for (int i = 0; i < arraysize(all_dc); ++i) {
         SetMapMode(all_dc[i], MM_ISOTROPIC);
         SetWindowExtEx(all_dc[i], width, height, NULL);
         SetViewportExtEx(all_dc[i], rc.right, rc.bottom, NULL);
@@ -437,7 +440,7 @@ bool MainWnd::RegisterWindowClass() {
   wcex.lpfnWndProc = &WndProc;
   wcex.lpszClassName = kClassName;
   wnd_class_ = ::RegisterClassEx(&wcex);
-  ASSERT(wnd_class_ != 0);
+  RTC_DCHECK(wnd_class_ != 0);
   return wnd_class_ != 0;
 }
 
@@ -453,7 +456,7 @@ void MainWnd::CreateChildWindow(HWND* wnd, MainWnd::ChildWindowID id,
                           100, 100, 100, 100, wnd_,
                           reinterpret_cast<HMENU>(id),
                           GetModuleHandle(NULL), NULL);
-  ASSERT(::IsWindow(*wnd) != FALSE);
+  RTC_DCHECK(::IsWindow(*wnd) != FALSE);
   ::SendMessage(*wnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDefaultFont()),
                 TRUE);
 }
@@ -575,11 +578,11 @@ MainWnd::VideoRenderer::VideoRenderer(
   bmi_.bmiHeader.biHeight = -height;
   bmi_.bmiHeader.biSizeImage = width * height *
                               (bmi_.bmiHeader.biBitCount >> 3);
-  rendered_track_->AddRenderer(this);
+  rendered_track_->AddOrUpdateSink(this, rtc::VideoSinkWants());
 }
 
 MainWnd::VideoRenderer::~VideoRenderer() {
-  rendered_track_->RemoveRenderer(this);
+  rendered_track_->RemoveSink(this);
   ::DeleteCriticalSection(&buffer_lock_);
 }
 
@@ -594,29 +597,31 @@ void MainWnd::VideoRenderer::SetSize(int width, int height) {
   bmi_.bmiHeader.biHeight = -height;
   bmi_.bmiHeader.biSizeImage = width * height *
                                (bmi_.bmiHeader.biBitCount >> 3);
-  image_.reset(new uint8[bmi_.bmiHeader.biSizeImage]);
+  image_.reset(new uint8_t[bmi_.bmiHeader.biSizeImage]);
 }
 
-void MainWnd::VideoRenderer::RenderFrame(
-    const cricket::VideoFrame* video_frame) {
-  if (!video_frame)
-    return;
+void MainWnd::VideoRenderer::OnFrame(
+    const webrtc::VideoFrame& video_frame) {
 
   {
     AutoLock<VideoRenderer> lock(this);
 
-    const cricket::VideoFrame* frame =
-        video_frame->GetCopyWithRotationApplied();
+    rtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer(
+        video_frame.video_frame_buffer());
+    if (video_frame.rotation() != webrtc::kVideoRotation_0) {
+      buffer = webrtc::I420Buffer::Rotate(*buffer, video_frame.rotation());
+    }
 
-    SetSize(static_cast<int>(frame->GetWidth()),
-            static_cast<int>(frame->GetHeight()));
+    SetSize(buffer->width(), buffer->height());
 
-    ASSERT(image_.get() != NULL);
-    frame->ConvertToRgbBuffer(cricket::FOURCC_ARGB,
-                              image_.get(),
-                              bmi_.bmiHeader.biSizeImage,
-                              bmi_.bmiHeader.biWidth *
-                              bmi_.bmiHeader.biBitCount / 8);
+    RTC_DCHECK(image_.get() != NULL);
+    libyuv::I420ToARGB(buffer->DataY(), buffer->StrideY(),
+                       buffer->DataU(), buffer->StrideU(),
+                       buffer->DataV(), buffer->StrideV(),
+                       image_.get(),
+                       bmi_.bmiHeader.biWidth *
+                           bmi_.bmiHeader.biBitCount / 8,
+                       buffer->width(), buffer->height());
   }
   InvalidateRect(wnd_, NULL, TRUE);
 }

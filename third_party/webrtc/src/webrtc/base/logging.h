@@ -46,16 +46,19 @@
 #ifndef WEBRTC_BASE_LOGGING_H_
 #define WEBRTC_BASE_LOGGING_H_
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"  // NOLINT
-#endif
+#include <errno.h>
 
 #include <list>
 #include <sstream>
 #include <string>
 #include <utility>
+
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+#include <CoreServices/CoreServices.h>
+#endif
+
 #include "webrtc/base/basictypes.h"
-#include "webrtc/base/criticalsection.h"
+#include "webrtc/base/constructormagic.h"
 #include "webrtc/base/thread_annotations.h"
 
 namespace rtc {
@@ -82,6 +85,11 @@ struct ConstantLabel { int value; const char * label; };
 
 const char* FindLabel(int value, const ConstantLabel entries[]);
 std::string ErrorName(int err, const ConstantLabel* err_table);
+
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+// Returns a UTF8 description from an OS X Status error.
+std::string DescriptionFromOSStatus(OSStatus err);
+#endif
 
 //////////////////////////////////////////////////////////////////////
 
@@ -131,11 +139,12 @@ class LogSink {
 
 class LogMessage {
  public:
-  static const uint32 WARN_SLOW_LOGS_DELAY = 50;  // ms
-
-  LogMessage(const char* file, int line, LoggingSeverity sev,
-             LogErrorContext err_ctx = ERRCTX_NONE, int err = 0,
-             const char* module = NULL);
+  LogMessage(const char* file,
+             int line,
+             LoggingSeverity sev,
+             LogErrorContext err_ctx = ERRCTX_NONE,
+             int err = 0,
+             const char* module = nullptr);
 
   LogMessage(const char* file,
              int line,
@@ -152,11 +161,11 @@ class LogMessage {
   // If this is not called externally, the LogMessage ctor also calls it, in
   // which case the logging start time will be the time of the first LogMessage
   // instance is created.
-  static uint32 LogStartTime();
+  static int64_t LogStartTime();
 
   // Returns the wall clock equivalent of |LogStartTime|, in seconds from the
   // epoch.
-  static uint32 WallClockStartTime();
+  static uint32_t WallClockStartTime();
 
   //  LogThreads: Display the thread identifier of the current thread
   static void LogThreads(bool on = true);
@@ -179,7 +188,7 @@ class LogMessage {
   //   GetLogToStream gets the severity for the specified stream, of if none
   //   is specified, the minimum stream severity.
   //   RemoveLogToStream removes the specified stream, without destroying it.
-  static int GetLogToStream(LogSink* stream = NULL);
+  static int GetLogToStream(LogSink* stream = nullptr);
   static void AddLogToStream(LogSink* stream, LoggingSeverity min_sev);
   static void RemoveLogToStream(LogSink* stream);
 
@@ -196,7 +205,7 @@ class LogMessage {
   typedef std::list<StreamAndSeverity> StreamList;
 
   // Updates min_sev_ appropriately when debug sinks change.
-  static void UpdateMinLogSeverity() EXCLUSIVE_LOCKS_REQUIRED(crit_);
+  static void UpdateMinLogSeverity();
 
   // These write out the actual log messages.
   static void OutputToDebug(const std::string& msg,
@@ -215,13 +224,6 @@ class LogMessage {
   // String data generated in the constructor, that should be appended to
   // the message before output.
   std::string extra_;
-
-  // If time it takes to write to stream is more than this, log one
-  // additional warning about it.
-  uint32 warn_slow_logs_delay_;
-
-  // Global lock for the logging subsystem
-  static CriticalSection crit_;
 
   // dbg_sev_ is the thresholds for those output targets
   // min_sev_ is the minimum (most verbose) of those levels, and is used
@@ -255,7 +257,7 @@ class LogMultilineState {
 };
 
 // When possible, pass optional state variable to track various data across
-// multiple calls to LogMultiline.  Otherwise, pass NULL.
+// multiple calls to LogMultiline.  Otherwise, pass null.
 void LogMultiline(LoggingSeverity level, const char* label, bool input,
                   const void* data, size_t len, bool hex_mode,
                   LogMultilineState* state);
@@ -293,7 +295,7 @@ class LogMessageVoidify {
     rtc::LogMessage(__FILE__, __LINE__, sev).stream()
 
 // The _F version prefixes the message with the current function name.
-#if (defined(__GNUC__) && defined(_DEBUG)) || defined(WANT_PRETTY_LOG_F)
+#if (defined(__GNUC__) && !defined(NDEBUG)) || defined(WANT_PRETTY_LOG_F)
 #define LOG_F(sev) LOG(sev) << __PRETTY_FUNCTION__ << ": "
 #define LOG_T_F(sev) LOG(sev) << this << ": " << __PRETTY_FUNCTION__ << ": "
 #else
@@ -336,7 +338,7 @@ inline bool LogCheckLevel(LoggingSeverity sev) {
   LOG_GLE(sev)
 #define LAST_SYSTEM_ERROR \
   (::GetLastError())
-#elif __native_client__
+#elif defined(__native_client__) && __native_client__
 #define LOG_ERR_EX(sev, err) \
   LOG(sev)
 #define LOG_ERR(sev) \
@@ -352,9 +354,9 @@ inline bool LogCheckLevel(LoggingSeverity sev) {
   (errno)
 #endif  // WEBRTC_WIN
 
-#define LOG_TAG(sev, tag) \
+#define LOG_TAG(sev, tag)        \
   LOG_SEVERITY_PRECONDITION(sev) \
-    rtc::LogMessage(NULL, 0, sev, tag).stream()
+  rtc::LogMessage(nullptr, 0, sev, tag).stream()
 
 #define PLOG(sev, err) \
   LOG_ERR_EX(sev, err)

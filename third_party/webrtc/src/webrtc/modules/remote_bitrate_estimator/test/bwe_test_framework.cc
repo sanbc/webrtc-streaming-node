@@ -14,6 +14,8 @@
 
 #include <sstream>
 
+#include "webrtc/base/constructormagic.h"
+
 namespace webrtc {
 namespace testing {
 namespace bwe {
@@ -92,58 +94,19 @@ double RateCounter::BitrateWindowS() const {
   return static_cast<double>(window_size_us_) / (1000 * 1000);
 }
 
-Random::Random(uint32_t seed) : a_(0x531FDB97 ^ seed), b_(0x6420ECA8 + seed) {
-}
-
-float Random::Rand() {
-  const float kScale = 1.0f / 0xffffffff;
-  float result = kScale * b_;
-  a_ ^= b_;
-  b_ += a_;
-  return result;
-}
-
-int Random::Rand(int low, int high) {
-  float uniform = Rand() * (high - low + 1) + low;
-  return static_cast<int>(uniform);
-}
-
-int Random::Gaussian(int mean, int standard_deviation) {
-  // Creating a Normal distribution variable from two independent uniform
-  // variables based on the Box-Muller transform, which is defined on the
-  // interval (0, 1], hence the mask+add below.
-  const double kPi = 3.14159265358979323846;
-  const double kScale = 1.0 / 0x80000000ul;
-  double u1 = kScale * ((a_ & 0x7ffffffful) + 1);
-  double u2 = kScale * ((b_ & 0x7ffffffful) + 1);
-  a_ ^= b_;
-  b_ += a_;
-  return static_cast<int>(
-      mean + standard_deviation * sqrt(-2 * log(u1)) * cos(2 * kPi * u2));
-}
-
-int Random::Exponential(float lambda) {
-  float uniform = Rand();
-  return static_cast<int>(-log(uniform) / lambda);
-}
-
 Packet::Packet()
     : flow_id_(0),
       creation_time_us_(-1),
       send_time_us_(-1),
       sender_timestamp_us_(-1),
-      payload_size_(0),
-      paced_(false) {
-}
+      payload_size_(0) {}
 
 Packet::Packet(int flow_id, int64_t send_time_us, size_t payload_size)
     : flow_id_(flow_id),
       creation_time_us_(send_time_us),
       send_time_us_(send_time_us),
       sender_timestamp_us_(send_time_us),
-      payload_size_(payload_size),
-      paced_(false) {
-}
+      payload_size_(payload_size) {}
 
 Packet::~Packet() {
 }
@@ -203,10 +166,9 @@ SendSideBweFeedback::SendSideBweFeedback(
     int flow_id,
     int64_t send_time_us,
     int64_t last_send_time_ms,
-    const std::vector<PacketInfo>& packet_feedback_vector)
+    const std::vector<PacketFeedback>& packet_feedback_vector)
     : FeedbackPacket(flow_id, send_time_us, last_send_time_ms),
-      packet_feedback_vector_(packet_feedback_vector) {
-}
+      packet_feedback_vector_(packet_feedback_vector) {}
 
 bool IsTimeSorted(const Packets& packets) {
   PacketsConstIt last_it = packets.begin();
@@ -254,42 +216,46 @@ uint32_t PacketProcessor::bits_per_second() const {
 RateCounterFilter::RateCounterFilter(PacketProcessorListener* listener,
                                      int flow_id,
                                      const char* name,
-                                     const std::string& plot_name)
+                                     const std::string& algorithm_name)
     : PacketProcessor(listener, flow_id, kRegular),
       packets_per_second_stats_(),
       kbps_stats_(),
       start_plotting_time_ms_(0),
-      plot_name_(plot_name) {
-  std::stringstream ss;
-  ss << name << "_" << flow_id;
-  name_ = ss.str();
+      flow_id_(flow_id),
+      name_(name),
+      algorithm_name_(algorithm_name) {
+  // Only used when compiling with BWE test logging enabled.
+  RTC_UNUSED(flow_id_);
 }
 
 RateCounterFilter::RateCounterFilter(PacketProcessorListener* listener,
                                      const FlowIds& flow_ids,
                                      const char* name,
-                                     const std::string& plot_name)
+                                     const std::string& algorithm_name)
     : PacketProcessor(listener, flow_ids, kRegular),
       packets_per_second_stats_(),
       kbps_stats_(),
       start_plotting_time_ms_(0),
-      plot_name_(plot_name) {
+      name_(name),
+      algorithm_name_(algorithm_name) {
+  // TODO(terelius): Appending the flow IDs to the algorithm name is a hack to
+  // keep the current plot functionality without having to print the full
+  // context for each PLOT line. It is unclear whether multiple flow IDs are
+  // needed at all in the long term.
   std::stringstream ss;
-  ss << name;
-  char delimiter = '_';
+  ss << algorithm_name_;
   for (int flow_id : flow_ids) {
-    ss << delimiter << flow_id;
-    delimiter = ',';
+    ss << ',' << flow_id;
   }
-  name_ = ss.str();
+  algorithm_name_ = ss.str();
 }
 
 RateCounterFilter::RateCounterFilter(PacketProcessorListener* listener,
                                      const FlowIds& flow_ids,
                                      const char* name,
                                      int64_t start_plotting_time_ms,
-                                     const std::string& plot_name)
-    : RateCounterFilter(listener, flow_ids, name, plot_name) {
+                                     const std::string& algorithm_name)
+    : RateCounterFilter(listener, flow_ids, name, algorithm_name) {
   start_plotting_time_ms_ = start_plotting_time_ms;
 }
 
@@ -309,18 +275,21 @@ Stats<double> RateCounterFilter::GetBitrateStats() const {
 }
 
 void RateCounterFilter::Plot(int64_t timestamp_ms) {
+  // TODO(stefan): Reorganize logging configuration to reduce amount
+  // of preprocessor conditionals in the code.
   uint32_t plot_kbps = 0;
   if (timestamp_ms >= start_plotting_time_ms_) {
     plot_kbps = rate_counter_.bits_per_second() / 1000.0;
   }
   BWE_TEST_LOGGING_CONTEXT(name_.c_str());
-  if (plot_name_.empty()) {
-    BWE_TEST_LOGGING_PLOT(0, "Throughput_kbps#1", timestamp_ms, plot_kbps);
+  if (algorithm_name_.empty()) {
+    BWE_TEST_LOGGING_PLOT_WITH_SSRC(0, "Throughput_kbps#1", timestamp_ms,
+                                    plot_kbps, flow_id_);
   } else {
-    BWE_TEST_LOGGING_PLOT_WITH_NAME(0, "Throughput_kbps#1", timestamp_ms,
-                                    plot_kbps, plot_name_);
+    BWE_TEST_LOGGING_PLOT_WITH_NAME_AND_SSRC(0, "Throughput_kbps#1",
+                                             timestamp_ms, plot_kbps, flow_id_,
+                                             algorithm_name_);
   }
-
   RTC_UNUSED(plot_kbps);
 }
 
@@ -358,7 +327,7 @@ void LossFilter::SetLoss(float loss_percent) {
 void LossFilter::RunFor(int64_t /*time_ms*/, Packets* in_out) {
   assert(in_out);
   for (PacketsIt it = in_out->begin(); it != in_out->end(); ) {
-    if (random_.Rand() < loss_fraction_) {
+    if (random_.Rand<float>() < loss_fraction_) {
       delete *it;
       it = in_out->erase(it);
     } else {
@@ -494,7 +463,7 @@ void ReorderFilter::RunFor(int64_t /*time_ms*/, Packets* in_out) {
     PacketsIt last_it = in_out->begin();
     PacketsIt it = last_it;
     while (++it != in_out->end()) {
-      if (random_.Rand() < reorder_fraction_) {
+      if (random_.Rand<float>() < reorder_fraction_) {
         int64_t t1 = (*last_it)->send_time_us();
         int64_t t2 = (*it)->send_time_us();
         std::swap(*last_it, *it);
@@ -621,7 +590,7 @@ bool TraceBasedDeliveryFilter::Init(const std::string& filename) {
     return false;
   }
   int64_t first_timestamp = -1;
-  while(!feof(trace_file)) {
+  while (!feof(trace_file)) {
     const size_t kMaxLineLength = 100;
     char line[kMaxLineLength];
     if (fgets(line, kMaxLineLength, trace_file)) {
@@ -715,6 +684,7 @@ VideoSource::VideoSource(int flow_id,
       frame_period_ms_(1000.0 / fps),
       bits_per_second_(1000 * kbps),
       frame_size_bytes_(bits_per_second_ / 8 / fps),
+      random_(0x12345678),
       flow_id_(flow_id),
       next_frame_ms_(first_frame_offset_ms),
       next_frame_rand_ms_(0),
@@ -748,9 +718,7 @@ void VideoSource::RunFor(int64_t time_ms, Packets* in_out) {
     const int64_t kRandAmplitude = 2;
     // A variance picked uniformly from {-1, 0, 1} ms is added to the frame
     // timestamp.
-    next_frame_rand_ms_ =
-        kRandAmplitude * static_cast<float>(rand()) / RAND_MAX -
-        kRandAmplitude / 2;
+    next_frame_rand_ms_ = kRandAmplitude * (random_.Rand<float>() - 0.5);
 
     // Ensure frame will not have a negative timestamp.
     int64_t next_frame_ms =
@@ -796,7 +764,7 @@ AdaptiveVideoSource::AdaptiveVideoSource(int flow_id,
 }
 
 void AdaptiveVideoSource::SetBitrateBps(int bitrate_bps) {
-  bits_per_second_ = std::min(bitrate_bps, 2500000);
+  bits_per_second_ = bitrate_bps;
   frame_size_bytes_ = (bits_per_second_ / 8 * frame_period_ms_ + 500) / 1000;
 }
 

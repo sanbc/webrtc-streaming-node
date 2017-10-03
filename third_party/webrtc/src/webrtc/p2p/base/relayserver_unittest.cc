@@ -8,23 +8,24 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
 #include <string>
 
-#include "webrtc/p2p/base/relayserver.h"
 #include "webrtc/base/gunit.h"
 #include "webrtc/base/helpers.h"
 #include "webrtc/base/logging.h"
-#include "webrtc/base/physicalsocketserver.h"
+#include "webrtc/base/ptr_util.h"
 #include "webrtc/base/socketaddress.h"
 #include "webrtc/base/ssladapter.h"
 #include "webrtc/base/testclient.h"
 #include "webrtc/base/thread.h"
 #include "webrtc/base/virtualsocketserver.h"
+#include "webrtc/p2p/base/relayserver.h"
 
 using rtc::SocketAddress;
 using namespace cricket;
 
-static const uint32 LIFETIME = 4;  // seconds
+static const uint32_t LIFETIME = 4;  // seconds
 static const SocketAddress server_int_addr("127.0.0.1", 5000);
 static const SocketAddress server_ext_addr("127.0.0.1", 5001);
 static const SocketAddress client1_addr("127.0.0.1", 6000 + (rand() % 1000));
@@ -38,9 +39,8 @@ static const char* msg2 = "Lobster Thermidor a Crevette with a mornay sauce...";
 class RelayServerTest : public testing::Test {
  public:
   RelayServerTest()
-      : pss_(new rtc::PhysicalSocketServer),
-        ss_(new rtc::VirtualSocketServer(pss_.get())),
-        ss_scope_(ss_.get()),
+      : ss_(new rtc::VirtualSocketServer()),
+        thread_(ss_.get()),
         username_(rtc::CreateRandomString(12)),
         password_(rtc::CreateRandomString(12)) {}
 
@@ -54,34 +54,32 @@ class RelayServerTest : public testing::Test {
         rtc::AsyncUDPSocket::Create(ss_.get(), server_ext_addr));
 
     client1_.reset(new rtc::TestClient(
-        rtc::AsyncUDPSocket::Create(ss_.get(), client1_addr)));
+        WrapUnique(rtc::AsyncUDPSocket::Create(ss_.get(), client1_addr))));
     client2_.reset(new rtc::TestClient(
-        rtc::AsyncUDPSocket::Create(ss_.get(), client2_addr)));
+        WrapUnique(rtc::AsyncUDPSocket::Create(ss_.get(), client2_addr))));
   }
 
   void Allocate() {
-    rtc::scoped_ptr<StunMessage> req(
-        CreateStunMessage(STUN_ALLOCATE_REQUEST));
+    std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_ALLOCATE_REQUEST));
     AddUsernameAttr(req.get(), username_);
     AddLifetimeAttr(req.get(), LIFETIME);
     Send1(req.get());
     delete Receive1();
   }
   void Bind() {
-    rtc::scoped_ptr<StunMessage> req(
-        CreateStunMessage(STUN_BINDING_REQUEST));
+    std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_BINDING_REQUEST));
     AddUsernameAttr(req.get(), username_);
     Send2(req.get());
     delete Receive1();
   }
 
   void Send1(const StunMessage* msg) {
-    rtc::ByteBuffer buf;
+    rtc::ByteBufferWriter buf;
     msg->Write(&buf);
     SendRaw1(buf.Data(), static_cast<int>(buf.Length()));
   }
   void Send2(const StunMessage* msg) {
-    rtc::ByteBuffer buf;
+    rtc::ByteBufferWriter buf;
     msg->Write(&buf);
     SendRaw2(buf.Data(), static_cast<int>(buf.Length()));
   }
@@ -117,23 +115,22 @@ class RelayServerTest : public testing::Test {
   }
   StunMessage* Receive(rtc::TestClient* client) {
     StunMessage* msg = NULL;
-    rtc::TestClient::Packet* packet =
+    std::unique_ptr<rtc::TestClient::Packet> packet =
         client->NextPacket(rtc::TestClient::kTimeoutMs);
     if (packet) {
-      rtc::ByteBuffer buf(packet->buf, packet->size);
+      rtc::ByteBufferWriter buf(packet->buf, packet->size);
+      rtc::ByteBufferReader read_buf(buf);
       msg = new RelayMessage();
-      msg->Read(&buf);
-      delete packet;
+      msg->Read(&read_buf);
     }
     return msg;
   }
   std::string ReceiveRaw(rtc::TestClient* client) {
     std::string raw;
-    rtc::TestClient::Packet* packet =
+    std::unique_ptr<rtc::TestClient::Packet> packet =
         client->NextPacket(rtc::TestClient::kTimeoutMs);
     if (packet) {
       raw = std::string(packet->buf, packet->size);
-      delete packet;
     }
     return raw;
   }
@@ -146,37 +143,32 @@ class RelayServerTest : public testing::Test {
     return msg;
   }
   static void AddMagicCookieAttr(StunMessage* msg) {
-    StunByteStringAttribute* attr =
-        StunAttribute::CreateByteString(STUN_ATTR_MAGIC_COOKIE);
+    auto attr = StunAttribute::CreateByteString(STUN_ATTR_MAGIC_COOKIE);
     attr->CopyBytes(TURN_MAGIC_COOKIE_VALUE, sizeof(TURN_MAGIC_COOKIE_VALUE));
-    msg->AddAttribute(attr);
+    msg->AddAttribute(std::move(attr));
   }
   static void AddUsernameAttr(StunMessage* msg, const std::string& val) {
-    StunByteStringAttribute* attr =
-        StunAttribute::CreateByteString(STUN_ATTR_USERNAME);
+    auto attr = StunAttribute::CreateByteString(STUN_ATTR_USERNAME);
     attr->CopyBytes(val.c_str(), val.size());
-    msg->AddAttribute(attr);
+    msg->AddAttribute(std::move(attr));
   }
   static void AddLifetimeAttr(StunMessage* msg, int val) {
-    StunUInt32Attribute* attr =
-        StunAttribute::CreateUInt32(STUN_ATTR_LIFETIME);
+    auto attr = StunAttribute::CreateUInt32(STUN_ATTR_LIFETIME);
     attr->SetValue(val);
-    msg->AddAttribute(attr);
+    msg->AddAttribute(std::move(attr));
   }
   static void AddDestinationAttr(StunMessage* msg, const SocketAddress& addr) {
-    StunAddressAttribute* attr =
-        StunAttribute::CreateAddress(STUN_ATTR_DESTINATION_ADDRESS);
+    auto attr = StunAttribute::CreateAddress(STUN_ATTR_DESTINATION_ADDRESS);
     attr->SetIP(addr.ipaddr());
     attr->SetPort(addr.port());
-    msg->AddAttribute(attr);
+    msg->AddAttribute(std::move(attr));
   }
 
-  rtc::scoped_ptr<rtc::PhysicalSocketServer> pss_;
-  rtc::scoped_ptr<rtc::VirtualSocketServer> ss_;
-  rtc::SocketServerScope ss_scope_;
-  rtc::scoped_ptr<RelayServer> server_;
-  rtc::scoped_ptr<rtc::TestClient> client1_;
-  rtc::scoped_ptr<rtc::TestClient> client2_;
+  std::unique_ptr<rtc::VirtualSocketServer> ss_;
+  rtc::AutoSocketServerThread thread_;
+  std::unique_ptr<RelayServer> server_;
+  std::unique_ptr<rtc::TestClient> client1_;
+  std::unique_ptr<rtc::TestClient> client2_;
   std::string username_;
   std::string password_;
 };
@@ -189,8 +181,8 @@ TEST_F(RelayServerTest, TestBadRequest) {
 
 // Send an allocate request without a username and verify it is rejected.
 TEST_F(RelayServerTest, TestAllocateNoUsername) {
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_ALLOCATE_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_ALLOCATE_REQUEST)),
+      res;
 
   Send1(req.get());
   res.reset(Receive1());
@@ -208,8 +200,8 @@ TEST_F(RelayServerTest, TestAllocateNoUsername) {
 
 // Send a binding request and verify that it is rejected.
 TEST_F(RelayServerTest, TestBindingRequest) {
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_BINDING_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_BINDING_REQUEST)),
+      res;
   AddUsernameAttr(req.get(), username_);
 
   Send1(req.get());
@@ -228,8 +220,8 @@ TEST_F(RelayServerTest, TestBindingRequest) {
 
 // Send an allocate request and verify that it is accepted.
 TEST_F(RelayServerTest, TestAllocate) {
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_ALLOCATE_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_ALLOCATE_REQUEST)),
+      res;
   AddUsernameAttr(req.get(), username_);
   AddLifetimeAttr(req.get(), LIFETIME);
 
@@ -258,8 +250,8 @@ TEST_F(RelayServerTest, TestAllocate) {
 TEST_F(RelayServerTest, TestReallocate) {
   Allocate();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_ALLOCATE_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_ALLOCATE_REQUEST)),
+      res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), username_);
 
@@ -288,8 +280,8 @@ TEST_F(RelayServerTest, TestReallocate) {
 TEST_F(RelayServerTest, TestRemoteBind) {
   Allocate();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_BINDING_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_BINDING_REQUEST)),
+      res;
   AddUsernameAttr(req.get(), username_);
 
   Send2(req.get());
@@ -302,8 +294,8 @@ TEST_F(RelayServerTest, TestRemoteBind) {
       res->GetByteString(STUN_ATTR_DATA);
   ASSERT_TRUE(recv_data != NULL);
 
-  rtc::ByteBuffer buf(recv_data->bytes(), recv_data->length());
-  rtc::scoped_ptr<StunMessage> res2(new StunMessage());
+  rtc::ByteBufferReader buf(recv_data->bytes(), recv_data->length());
+  std::unique_ptr<StunMessage> res2(new StunMessage());
   EXPECT_TRUE(res2->Read(&buf));
   EXPECT_EQ(STUN_BINDING_REQUEST, res2->type());
   EXPECT_EQ(req->transaction_id(), res2->transaction_id());
@@ -334,8 +326,7 @@ TEST_F(RelayServerTest, TestSendRequestMissingUsername) {
   Allocate();
   Bind();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_SEND_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
   AddMagicCookieAttr(req.get());
 
   Send1(req.get());
@@ -357,8 +348,7 @@ TEST_F(RelayServerTest, TestSendRequestBadUsername) {
   Allocate();
   Bind();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_SEND_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), "foobarbizbaz");
 
@@ -382,8 +372,7 @@ TEST_F(RelayServerTest, TestSendRequestNoDestinationAddress) {
   Allocate();
   Bind();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_SEND_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), username_);
 
@@ -406,8 +395,7 @@ TEST_F(RelayServerTest, TestSendRequestNoData) {
   Allocate();
   Bind();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_SEND_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), username_);
   AddDestinationAttr(req.get(), client2_addr);
@@ -431,8 +419,8 @@ TEST_F(RelayServerTest, TestSendRequestWrongType) {
   Allocate();
   Bind();
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_BINDING_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_BINDING_REQUEST)),
+      res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), username_);
 
@@ -457,16 +445,14 @@ TEST_F(RelayServerTest, TestSendRaw) {
   Bind();
 
   for (int i = 0; i < 10; i++) {
-    rtc::scoped_ptr<StunMessage> req(
-        CreateStunMessage(STUN_SEND_REQUEST)), res;
+    std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
     AddMagicCookieAttr(req.get());
     AddUsernameAttr(req.get(), username_);
     AddDestinationAttr(req.get(), client2_addr);
 
-    StunByteStringAttribute* send_data =
-        StunAttribute::CreateByteString(STUN_ATTR_DATA);
+    auto send_data = StunAttribute::CreateByteString(STUN_ATTR_DATA);
     send_data->CopyBytes(msg1);
-    req->AddAttribute(send_data);
+    req->AddAttribute(std::move(send_data));
 
     Send1(req.get());
     EXPECT_EQ(msg1, ReceiveRaw2());
@@ -500,16 +486,14 @@ TEST_F(RelayServerTest, DISABLED_TestExpiration) {
   // Wait twice the lifetime to make sure the server has expired the binding.
   rtc::Thread::Current()->ProcessMessages((LIFETIME * 2) * 1000);
 
-  rtc::scoped_ptr<StunMessage> req(
-      CreateStunMessage(STUN_SEND_REQUEST)), res;
+  std::unique_ptr<StunMessage> req(CreateStunMessage(STUN_SEND_REQUEST)), res;
   AddMagicCookieAttr(req.get());
   AddUsernameAttr(req.get(), username_);
   AddDestinationAttr(req.get(), client2_addr);
 
-  StunByteStringAttribute* data_attr =
-      StunAttribute::CreateByteString(STUN_ATTR_DATA);
+  auto data_attr = StunAttribute::CreateByteString(STUN_ATTR_DATA);
   data_attr->CopyBytes(msg1);
-  req->AddAttribute(data_attr);
+  req->AddAttribute(std::move(data_attr));
 
   Send1(req.get());
   res.reset(Receive1());

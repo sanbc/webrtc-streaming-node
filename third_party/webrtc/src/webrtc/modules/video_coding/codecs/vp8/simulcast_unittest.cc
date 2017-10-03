@@ -13,18 +13,14 @@
 namespace webrtc {
 namespace testing {
 
-class TestVp8Impl
-    : public TestVp8Simulcast {
+class TestVp8Impl : public TestVp8Simulcast {
  public:
   TestVp8Impl()
-     : TestVp8Simulcast(VP8Encoder::Create(), VP8Decoder::Create()) {}
+      : TestVp8Simulcast(VP8Encoder::Create(), VP8Decoder::Create()) {}
+
  protected:
-  virtual void SetUp() {
-    TestVp8Simulcast::SetUp();
-  }
-  virtual void TearDown() {
-    TestVp8Simulcast::TearDown();
-  }
+  virtual void SetUp() { TestVp8Simulcast::SetUp(); }
+  virtual void TearDown() { TestVp8Simulcast::TearDown(); }
 };
 
 TEST_F(TestVp8Impl, TestKeyFrameRequestsOnAllStreams) {
@@ -67,12 +63,8 @@ TEST_F(TestVp8Impl, TestSwitchingToOneOddStream) {
   TestVp8Simulcast::TestSwitchingToOneOddStream();
 }
 
-TEST_F(TestVp8Impl, TestRPSIEncoder) {
-  TestVp8Simulcast::TestRPSIEncoder();
-}
-
-TEST_F(TestVp8Impl, TestRPSIEncodeDecode) {
-  TestVp8Simulcast::TestRPSIEncodeDecode();
+TEST_F(TestVp8Impl, TestSwitchingToOneSmallStream) {
+  TestVp8Simulcast::TestSwitchingToOneSmallStream();
 }
 
 TEST_F(TestVp8Impl, TestSaptioTemporalLayers333PatternEncoder) {
@@ -86,10 +78,5 @@ TEST_F(TestVp8Impl, TestSpatioTemporalLayers321PatternEncoder) {
 TEST_F(TestVp8Impl, TestStrideEncodeDecode) {
   TestVp8Simulcast::TestStrideEncodeDecode();
 }
-
-TEST_F(TestVp8Impl, TestSkipEncodingUnusedStreams) {
-  TestVp8Simulcast::TestSkipEncodingUnusedStreams();
-}
-
 }  // namespace testing
 }  // namespace webrtc

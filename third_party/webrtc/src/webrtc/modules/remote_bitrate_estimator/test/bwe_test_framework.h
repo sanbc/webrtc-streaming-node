@@ -16,22 +16,25 @@
 
 #include <algorithm>
 #include <list>
+#include <memory>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "webrtc/base/common.h"
-#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/base/constructormagic.h"
+#include "webrtc/base/random.h"
 #include "webrtc/modules/bitrate_controller/include/bitrate_controller.h"
-#include "webrtc/modules/interface/module_common_types.h"
-#include "webrtc/modules/pacing/include/paced_sender.h"
+#include "webrtc/modules/include/module_common_types.h"
+#include "webrtc/modules/pacing/paced_sender.h"
 #include "webrtc/modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet.h"
-#include "webrtc/modules/remote_bitrate_estimator/test/random.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
-#include "webrtc/system_wrappers/interface/clock.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "webrtc/system_wrappers/include/clock.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 
@@ -44,7 +47,7 @@ class DelayCapHelper;
 
 class RateCounter {
  public:
-  RateCounter(int64_t window_size_ms)
+  explicit RateCounter(int64_t window_size_ms)
       : window_size_us_(1000 * window_size_ms),
         recently_received_packets_(0),
         recently_received_bytes_(0),
@@ -173,32 +176,6 @@ template<typename T> class Stats {
   T max_;
 };
 
-class Random {
- public:
-  explicit Random(uint32_t seed);
-
-  // Return pseudo random number in the interval [0.0, 1.0].
-  float Rand();
-
-  // Return pseudo rounded random number in interval [low, high].
-  int Rand(int low, int high);
-
-  // Normal Distribution.
-  int Gaussian(int mean, int standard_deviation);
-
-  // Exponential Distribution.
-  int Exponential(float lambda);
-
-  // TODO(solenberg): Random from histogram.
-  // template<typename T> int Distribution(const std::vector<T> histogram) {
-
- private:
-  uint32_t a_;
-  uint32_t b_;
-
-  RTC_DISALLOW_IMPLICIT_CONSTRUCTORS(Random);
-};
-
 bool IsTimeSorted(const Packets& packets);
 
 class PacketProcessor;
@@ -253,16 +230,16 @@ class RateCounterFilter : public PacketProcessor {
   RateCounterFilter(PacketProcessorListener* listener,
                     int flow_id,
                     const char* name,
-                    const std::string& plot_name);
+                    const std::string& algorithm_name);
   RateCounterFilter(PacketProcessorListener* listener,
                     const FlowIds& flow_ids,
                     const char* name,
-                    const std::string& plot_name);
+                    const std::string& algorithm_name);
   RateCounterFilter(PacketProcessorListener* listener,
                     const FlowIds& flow_ids,
                     const char* name,
                     int64_t start_plotting_time_ms,
-                    const std::string& plot_name);
+                    const std::string& algorithm_name);
   virtual ~RateCounterFilter();
 
   void LogStats();
@@ -273,10 +250,11 @@ class RateCounterFilter : public PacketProcessor {
  private:
   Stats<double> packets_per_second_stats_;
   Stats<double> kbps_stats_;
-  std::string name_;
   int64_t start_plotting_time_ms_;
+  int flow_id_ = 0;
+  std::string name_;
   // Algorithm name if single flow, Total link utilization if all flows.
-  std::string plot_name_;
+  std::string algorithm_name_;
 
   RTC_DISALLOW_IMPLICIT_CONSTRUCTORS(RateCounterFilter);
 };
@@ -369,7 +347,7 @@ class ChokeFilter : public PacketProcessor {
  private:
   uint32_t capacity_kbps_;
   int64_t last_send_time_us_;
-  rtc::scoped_ptr<DelayCapHelper> delay_cap_helper_;
+  std::unique_ptr<DelayCapHelper> delay_cap_helper_;
 
   RTC_DISALLOW_IMPLICIT_CONSTRUCTORS(ChokeFilter);
 };
@@ -403,9 +381,9 @@ class TraceBasedDeliveryFilter : public PacketProcessor {
   TimeList delivery_times_us_;
   TimeList::const_iterator next_delivery_it_;
   int64_t local_time_us_;
-  rtc::scoped_ptr<RateCounter> rate_counter_;
+  std::unique_ptr<RateCounter> rate_counter_;
   std::string name_;
-  rtc::scoped_ptr<DelayCapHelper> delay_cap_helper_;
+  std::unique_ptr<DelayCapHelper> delay_cap_helper_;
   Stats<double> packets_per_second_stats_;
   Stats<double> kbps_stats_;
 
@@ -441,6 +419,7 @@ class VideoSource {
   uint32_t frame_size_bytes_;
 
  private:
+  Random random_;
   const int flow_id_;
   int64_t next_frame_ms_;
   int64_t next_frame_rand_ms_;

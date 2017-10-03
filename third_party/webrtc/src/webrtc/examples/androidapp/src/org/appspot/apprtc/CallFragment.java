@@ -31,6 +31,7 @@ public class CallFragment extends Fragment {
   private ImageButton disconnectButton;
   private ImageButton cameraSwitchButton;
   private ImageButton videoScalingButton;
+  private ImageButton toggleMuteButton;
   private TextView captureFormatText;
   private SeekBar captureFormatSlider;
   private OnCallEvents callEvents;
@@ -41,31 +42,26 @@ public class CallFragment extends Fragment {
    * Call control interface for container activity.
    */
   public interface OnCallEvents {
-    public void onCallHangUp();
-    public void onCameraSwitch();
-    public void onVideoScalingSwitch(ScalingType scalingType);
-    public void onCaptureFormatChange(int width, int height, int framerate);
+    void onCallHangUp();
+    void onCameraSwitch();
+    void onVideoScalingSwitch(ScalingType scalingType);
+    void onCaptureFormatChange(int width, int height, int framerate);
+    boolean onToggleMic();
   }
 
   @Override
-  public View onCreateView(LayoutInflater inflater, ViewGroup container,
-      Bundle savedInstanceState) {
-    controlView =
-        inflater.inflate(R.layout.fragment_call, container, false);
+  public View onCreateView(
+      LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+    controlView = inflater.inflate(R.layout.fragment_call, container, false);
 
     // Create UI controls.
-    contactView =
-        (TextView) controlView.findViewById(R.id.contact_name_call);
-    disconnectButton =
-        (ImageButton) controlView.findViewById(R.id.button_call_disconnect);
-    cameraSwitchButton =
-        (ImageButton) controlView.findViewById(R.id.button_call_switch_camera);
-    videoScalingButton =
-        (ImageButton) controlView.findViewById(R.id.button_call_scaling_mode);
-    captureFormatText =
-        (TextView) controlView.findViewById(R.id.capture_format_text_call);
-    captureFormatSlider =
-        (SeekBar) controlView.findViewById(R.id.capture_format_slider_call);
+    contactView = (TextView) controlView.findViewById(R.id.contact_name_call);
+    disconnectButton = (ImageButton) controlView.findViewById(R.id.button_call_disconnect);
+    cameraSwitchButton = (ImageButton) controlView.findViewById(R.id.button_call_switch_camera);
+    videoScalingButton = (ImageButton) controlView.findViewById(R.id.button_call_scaling_mode);
+    toggleMuteButton = (ImageButton) controlView.findViewById(R.id.button_call_toggle_mic);
+    captureFormatText = (TextView) controlView.findViewById(R.id.capture_format_text_call);
+    captureFormatSlider = (SeekBar) controlView.findViewById(R.id.capture_format_slider_call);
 
     // Add buttons click events.
     disconnectButton.setOnClickListener(new View.OnClickListener() {
@@ -86,18 +82,24 @@ public class CallFragment extends Fragment {
       @Override
       public void onClick(View view) {
         if (scalingType == ScalingType.SCALE_ASPECT_FILL) {
-          videoScalingButton.setBackgroundResource(
-              R.drawable.ic_action_full_screen);
+          videoScalingButton.setBackgroundResource(R.drawable.ic_action_full_screen);
           scalingType = ScalingType.SCALE_ASPECT_FIT;
         } else {
-          videoScalingButton.setBackgroundResource(
-              R.drawable.ic_action_return_from_full_screen);
+          videoScalingButton.setBackgroundResource(R.drawable.ic_action_return_from_full_screen);
           scalingType = ScalingType.SCALE_ASPECT_FILL;
         }
         callEvents.onVideoScalingSwitch(scalingType);
       }
     });
     scalingType = ScalingType.SCALE_ASPECT_FILL;
+
+    toggleMuteButton.setOnClickListener(new View.OnClickListener() {
+      @Override
+      public void onClick(View view) {
+        boolean enabled = callEvents.onToggleMic();
+        toggleMuteButton.setAlpha(enabled ? 1.0f : 0.3f);
+      }
+    });
 
     return controlView;
   }
@@ -127,10 +129,11 @@ public class CallFragment extends Fragment {
     }
   }
 
+  // TODO(sakal): Replace with onAttach(Context) once we only support API level 23+.
+  @SuppressWarnings("deprecation")
   @Override
   public void onAttach(Activity activity) {
     super.onAttach(activity);
     callEvents = (OnCallEvents) activity;
   }
-
 }

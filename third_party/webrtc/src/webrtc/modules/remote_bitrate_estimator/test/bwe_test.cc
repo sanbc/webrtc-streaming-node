@@ -10,20 +10,24 @@
 
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe_test.h"
 
+#include <memory>
 #include <sstream>
 
-#include "webrtc/base/common.h"
-#include "webrtc/base/scoped_ptr.h"
-#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/base/arraysize.h"
+#include "webrtc/modules/include/module_common_types.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe_test_framework.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/metric_recorder.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet_receiver.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet_sender.h"
-#include "webrtc/system_wrappers/interface/clock.h"
+#include "webrtc/system_wrappers/include/clock.h"
+#include "webrtc/system_wrappers/include/field_trial.h"
 #include "webrtc/test/testsupport/perf_test.h"
 
-using std::string;
 using std::vector;
+
+namespace {
+const int kQuickTestTimeoutMs = 500;
+}
 
 namespace webrtc {
 namespace testing {
@@ -113,8 +117,9 @@ BweTest::~BweTest() {
 void BweTest::SetUp() {
   const ::testing::TestInfo* const test_info =
       ::testing::UnitTest::GetInstance()->current_test_info();
-  string test_name =
-      string(test_info->test_case_name()) + "_" + string(test_info->name());
+  std::string test_name =
+      std::string(test_info->test_case_name()) + "_" +
+      std::string(test_info->name());
   BWE_TEST_LOGGING_GLOBAL_CONTEXT(test_name);
   BWE_TEST_LOGGING_GLOBAL_ENABLE(false);
 }
@@ -136,7 +141,7 @@ void Link::AddPacketProcessor(PacketProcessor* processor,
 }
 
 void Link::RemovePacketProcessor(PacketProcessor* processor) {
-  for (vector<PacketProcessorRunner>::iterator it = processors_.begin();
+  for (std::vector<PacketProcessorRunner>::iterator it = processors_.begin();
        it != processors_.end(); ++it) {
     if (it->RunsProcessor(processor)) {
       processors_.erase(it);
@@ -160,6 +165,11 @@ void BweTest::VerboseLogging(bool enable) {
 void BweTest::RunFor(int64_t time_ms) {
   // Set simulation interval from first packet sender.
   // TODO(holmer): Support different feedback intervals for different flows.
+
+  // For quick perf tests ignore passed timeout
+  if (field_trial::IsEnabled("WebRTC-QuickPerfTest")) {
+    time_ms = kQuickTestTimeoutMs;
+  }
   if (!uplink_.senders().empty()) {
     simulation_interval_ms_ = uplink_.senders()[0]->GetFeedbackIntervalMs();
   } else if (!downlink_.senders().empty()) {
@@ -181,10 +191,10 @@ void BweTest::RunFor(int64_t time_ms) {
   }
 }
 
-string BweTest::GetTestName() const {
+std::string BweTest::GetTestName() const {
   const ::testing::TestInfo* const test_info =
       ::testing::UnitTest::GetInstance()->current_test_info();
-  return string(test_info->name());
+  return std::string(test_info->name());
 }
 
 void BweTest::PrintResults(double max_throughput_kbps,
@@ -370,21 +380,23 @@ void BweTest::RunFairnessTest(BandwidthEstimatorType bwe_type,
   PrintResults(capacity_kbps, total_utilization.GetBitrateStats(),
                flow_delay_ms, flow_throughput_kbps);
 
-  for (int i : all_flow_ids) {
-    metric_recorders[i]->PlotThroughputHistogram(
-        title, flow_name, static_cast<int>(num_media_flows), 0);
+  if (!field_trial::IsEnabled("WebRTC-QuickPerfTest")) {
+    for (int i : all_flow_ids) {
+      metric_recorders[i]->PlotThroughputHistogram(
+          title, flow_name, static_cast<int>(num_media_flows), 0);
 
-    metric_recorders[i]->PlotLossHistogram(title, flow_name,
-                                           static_cast<int>(num_media_flows),
-                                           receivers[i]->GlobalPacketLoss());
-  }
+      metric_recorders[i]->PlotLossHistogram(title, flow_name,
+                                             static_cast<int>(num_media_flows),
+                                             receivers[i]->GlobalPacketLoss());
+    }
 
-  // Pointless to show delay histogram for TCP flow.
-  for (int i : media_flow_ids) {
-    metric_recorders[i]->PlotDelayHistogram(title, bwe_names[bwe_type],
-                                            static_cast<int>(num_media_flows),
-                                            one_way_delay_ms);
-    BWE_TEST_LOGGING_BASELINEBAR(5, bwe_names[bwe_type], one_way_delay_ms, i);
+    // Pointless to show delay histogram for TCP flow.
+    for (int i : media_flow_ids) {
+      metric_recorders[i]->PlotDelayHistogram(title, bwe_names[bwe_type],
+                                              static_cast<int>(num_media_flows),
+                                              one_way_delay_ms);
+      BWE_TEST_LOGGING_BASELINEBAR(5, bwe_names[bwe_type], one_way_delay_ms, i);
+    }
   }
 
   for (VideoSource* source : sources)
@@ -554,10 +566,10 @@ void BweTest::RunVariableCapacity2MultipleFlows(BandwidthEstimatorType bwe_type,
 void BweTest::RunBidirectionalFlow(BandwidthEstimatorType bwe_type) {
   enum direction { kForward = 0, kBackward };
   const size_t kNumFlows = 2;
-  rtc::scoped_ptr<AdaptiveVideoSource> sources[kNumFlows];
-  rtc::scoped_ptr<VideoSender> senders[kNumFlows];
-  rtc::scoped_ptr<MetricRecorder> metric_recorders[kNumFlows];
-  rtc::scoped_ptr<PacketReceiver> receivers[kNumFlows];
+  std::unique_ptr<AdaptiveVideoSource> sources[kNumFlows];
+  std::unique_ptr<VideoSender> senders[kNumFlows];
+  std::unique_ptr<MetricRecorder> metric_recorders[kNumFlows];
+  std::unique_ptr<PacketReceiver> receivers[kNumFlows];
 
   sources[kForward].reset(new AdaptiveVideoSource(kForward, 30, 300, 0, 0));
   senders[kForward].reset(
@@ -662,10 +674,10 @@ void BweTest::RunSelfFairness(BandwidthEstimatorType bwe_type) {
 void BweTest::RunRoundTripTimeFairness(BandwidthEstimatorType bwe_type) {
   const int kAllFlowIds[] = {0, 1, 2, 3, 4};  // Five RMCAT flows.
   const int64_t kAllOneWayDelayMs[] = {10, 25, 50, 100, 150};
-  const size_t kNumFlows = ARRAY_SIZE(kAllFlowIds);
-  rtc::scoped_ptr<AdaptiveVideoSource> sources[kNumFlows];
-  rtc::scoped_ptr<VideoSender> senders[kNumFlows];
-  rtc::scoped_ptr<MetricRecorder> metric_recorders[kNumFlows];
+  const size_t kNumFlows = arraysize(kAllFlowIds);
+  std::unique_ptr<AdaptiveVideoSource> sources[kNumFlows];
+  std::unique_ptr<VideoSender> senders[kNumFlows];
+  std::unique_ptr<MetricRecorder> metric_recorders[kNumFlows];
 
   // Flows initialized 10 seconds apart.
   const int64_t kStartingApartMs = 10 * 1000;
@@ -681,7 +693,7 @@ void BweTest::RunRoundTripTimeFairness(BandwidthEstimatorType bwe_type) {
 
   JitterFilter jitter_filter(&uplink_, CreateFlowIds(kAllFlowIds, kNumFlows));
 
-  rtc::scoped_ptr<DelayFilter> up_delay_filters[kNumFlows];
+  std::unique_ptr<DelayFilter> up_delay_filters[kNumFlows];
   for (size_t i = 0; i < kNumFlows; ++i) {
     up_delay_filters[i].reset(new DelayFilter(&uplink_, kAllFlowIds[i]));
   }
@@ -692,7 +704,7 @@ void BweTest::RunRoundTripTimeFairness(BandwidthEstimatorType bwe_type) {
 
   // Delays is being plotted only for the first flow.
   // To plot all of them, replace "i == 0" with "true" on new PacketReceiver().
-  rtc::scoped_ptr<PacketReceiver> receivers[kNumFlows];
+  std::unique_ptr<PacketReceiver> receivers[kNumFlows];
   for (size_t i = 0; i < kNumFlows; ++i) {
     metric_recorders[i].reset(
         new MetricRecorder(bwe_names[bwe_type], static_cast<int>(i),
@@ -707,7 +719,7 @@ void BweTest::RunRoundTripTimeFairness(BandwidthEstimatorType bwe_type) {
         i == 0 && plot_total_available_capacity_);
   }
 
-  rtc::scoped_ptr<DelayFilter> down_delay_filters[kNumFlows];
+  std::unique_ptr<DelayFilter> down_delay_filters[kNumFlows];
   for (size_t i = 0; i < kNumFlows; ++i) {
     down_delay_filters[i].reset(new DelayFilter(&downlink_, kAllFlowIds[i]));
   }
@@ -757,7 +769,8 @@ void BweTest::RunLongTcpFairness(BandwidthEstimatorType bwe_type) {
   // max_delay_ms = 1000;
 
   std::string title("5.6_Long_TCP_Fairness");
-  std::string flow_name(bwe_names[bwe_type] + 'x' + bwe_names[kTcpEstimator]);
+  std::string flow_name = std::string() +
+      bwe_names[bwe_type] + 'x' + bwe_names[kTcpEstimator];
 
   RunFairnessTest(bwe_type, kNumRmcatFlows, kNumTcpFlows, kRunTimeS,
                   kCapacityKbps, max_delay_ms, rtt_ms, kMaxJitterMs, kOffSetsMs,
@@ -774,15 +787,15 @@ void BweTest::RunMultipleShortTcpFairness(
   const int kAllTcpFlowIds[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
 
   assert(tcp_starting_times_ms.size() == tcp_file_sizes_bytes.size() &&
-         tcp_starting_times_ms.size() == ARRAY_SIZE(kAllTcpFlowIds));
+         tcp_starting_times_ms.size() == arraysize(kAllTcpFlowIds));
 
-  const size_t kNumRmcatFlows = ARRAY_SIZE(kAllRmcatFlowIds);
-  const size_t kNumTotalFlows = kNumRmcatFlows + ARRAY_SIZE(kAllTcpFlowIds);
+  const size_t kNumRmcatFlows = arraysize(kAllRmcatFlowIds);
+  const size_t kNumTotalFlows = kNumRmcatFlows + arraysize(kAllTcpFlowIds);
 
-  rtc::scoped_ptr<AdaptiveVideoSource> sources[kNumRmcatFlows];
-  rtc::scoped_ptr<PacketSender> senders[kNumTotalFlows];
-  rtc::scoped_ptr<MetricRecorder> metric_recorders[kNumTotalFlows];
-  rtc::scoped_ptr<PacketReceiver> receivers[kNumTotalFlows];
+  std::unique_ptr<AdaptiveVideoSource> sources[kNumRmcatFlows];
+  std::unique_ptr<PacketSender> senders[kNumTotalFlows];
+  std::unique_ptr<MetricRecorder> metric_recorders[kNumTotalFlows];
+  std::unique_ptr<PacketReceiver> receivers[kNumTotalFlows];
 
   // RMCAT Flows are initialized simultaneosly at t=5 seconds.
   const int64_t kRmcatStartingTimeMs = 5 * 1000;
@@ -869,12 +882,12 @@ void BweTest::RunMultipleShortTcpFairness(
 // During the test, one of the flows is paused and later resumed.
 void BweTest::RunPauseResumeFlows(BandwidthEstimatorType bwe_type) {
   const int kAllFlowIds[] = {0, 1, 2};  // Three RMCAT flows.
-  const size_t kNumFlows = ARRAY_SIZE(kAllFlowIds);
+  const size_t kNumFlows = arraysize(kAllFlowIds);
 
-  rtc::scoped_ptr<AdaptiveVideoSource> sources[kNumFlows];
-  rtc::scoped_ptr<VideoSender> senders[kNumFlows];
-  rtc::scoped_ptr<MetricRecorder> metric_recorders[kNumFlows];
-  rtc::scoped_ptr<PacketReceiver> receivers[kNumFlows];
+  std::unique_ptr<AdaptiveVideoSource> sources[kNumFlows];
+  std::unique_ptr<VideoSender> senders[kNumFlows];
+  std::unique_ptr<MetricRecorder> metric_recorders[kNumFlows];
+  std::unique_ptr<PacketReceiver> receivers[kNumFlows];
 
   // Flows initialized simultaneously.
   const int64_t kStartingApartMs = 0;

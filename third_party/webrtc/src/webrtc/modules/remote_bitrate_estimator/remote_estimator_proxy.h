@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "webrtc/base/criticalsection.h"
-#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/modules/include/module_common_types.h"
 #include "webrtc/modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
 
 namespace webrtc {
@@ -32,33 +32,32 @@ class TransportFeedback;
 
 class RemoteEstimatorProxy : public RemoteBitrateEstimator {
  public:
-  RemoteEstimatorProxy(Clock* clock, PacketRouter* packet_router);
+  RemoteEstimatorProxy(const Clock* clock, PacketRouter* packet_router);
   virtual ~RemoteEstimatorProxy();
 
-  void IncomingPacketFeedbackVector(
-      const std::vector<PacketInfo>& packet_feedback_vector) override;
   void IncomingPacket(int64_t arrival_time_ms,
                       size_t payload_size,
-                      const RTPHeader& header,
-                      bool was_paced) override;
-  void RemoveStream(unsigned int ssrc) override;
+                      const RTPHeader& header) override;
+  void RemoveStream(uint32_t ssrc) override {}
   bool LatestEstimate(std::vector<unsigned int>* ssrcs,
                       unsigned int* bitrate_bps) const override;
-  bool GetStats(ReceiveBandwidthEstimatorStats* output) const override;
   void OnRttUpdate(int64_t avg_rtt_ms, int64_t max_rtt_ms) override {}
   void SetMinBitrate(int min_bitrate_bps) override {}
   int64_t TimeUntilNextProcess() override;
-  int32_t Process() override;
+  void Process() override;
+  void OnBitrateChanged(int bitrate);
 
-  static const int kDefaultProcessIntervalMs;
+  static const int kMinSendIntervalMs;
+  static const int kMaxSendIntervalMs;
+  static const int kDefaultSendIntervalMs;
   static const int kBackWindowMs;
 
  private:
   void OnPacketArrival(uint16_t sequence_number, int64_t arrival_time)
       EXCLUSIVE_LOCKS_REQUIRED(&lock_);
-  bool BuildFeedbackPacket(rtcp::TransportFeedback* feedback_packetket);
+  bool BuildFeedbackPacket(rtcp::TransportFeedback* feedback_packet);
 
-  Clock* const clock_;
+  const Clock* const clock_;
   PacketRouter* const packet_router_;
   int64_t last_process_time_ms_;
 
@@ -70,6 +69,7 @@ class RemoteEstimatorProxy : public RemoteBitrateEstimator {
   int64_t window_start_seq_ GUARDED_BY(&lock_);
   // Map unwrapped seq -> time.
   std::map<int64_t, int64_t> packet_arrival_times_ GUARDED_BY(&lock_);
+  int64_t send_interval_ms_ GUARDED_BY(&lock_);
 };
 
 }  // namespace webrtc

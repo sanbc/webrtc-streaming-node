@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,7 @@
 #include "webrtc/base/constructormagic.h"
 #include "webrtc/base/event.h"
 #include "webrtc/base/messagequeue.h"
+#include "webrtc/base/platform_thread_types.h"
 
 #if defined(WEBRTC_WIN)
 #include "webrtc/base/win32.h"
@@ -35,9 +37,7 @@ class ThreadManager {
  public:
   static const int kForever = -1;
 
-  ThreadManager();
-  ~ThreadManager();
-
+  // Singleton, constructor and destructor are private.
   static ThreadManager* Instance();
 
   Thread* CurrentThread();
@@ -55,11 +55,16 @@ class ThreadManager {
   // unexpected contexts (like inside browser plugins) and it would be a
   // shame to break it.  It is also conceivable on Win32 that we won't even
   // be able to get synchronization privileges, in which case the result
-  // will have a NULL handle.
+  // will have a null handle.
   Thread *WrapCurrentThread();
   void UnwrapCurrentThread();
 
+  bool IsMainThread();
+
  private:
+  ThreadManager();
+  ~ThreadManager();
+
 #if defined(WEBRTC_POSIX)
   pthread_key_t key_;
 #endif
@@ -67,6 +72,9 @@ class ThreadManager {
 #if defined(WEBRTC_WIN)
   DWORD key_;
 #endif
+
+  // The thread to potentially autowrap.
+  PlatformThreadRef main_thread_ref_;
 
   RTC_DISALLOW_COPY_AND_ASSIGN(ThreadManager);
 };
@@ -76,13 +84,6 @@ struct _SendMessage {
   Thread *thread;
   Message msg;
   bool *ready;
-};
-
-enum ThreadPriority {
-  PRIORITY_IDLE = -1,
-  PRIORITY_NORMAL = 0,
-  PRIORITY_ABOVE_NORMAL = 1,
-  PRIORITY_HIGH = 2,
 };
 
 class Runnable {
@@ -99,15 +100,21 @@ class Runnable {
 
 // WARNING! SUBCLASSES MUST CALL Stop() IN THEIR DESTRUCTORS!  See ~Thread().
 
-class Thread : public MessageQueue {
+class LOCKABLE Thread : public MessageQueue {
  public:
-  explicit Thread(SocketServer* ss = NULL);
+  // Create a new Thread and optionally assign it to the passed SocketServer.
+  Thread();
+  explicit Thread(SocketServer* ss);
+  explicit Thread(std::unique_ptr<SocketServer> ss);
+
   // NOTE: ALL SUBCLASSES OF Thread MUST CALL Stop() IN THEIR DESTRUCTORS (or
   // guarantee Stop() is explicitly called before the subclass is destroyed).
   // This is required to avoid a data race between the destructor modifying the
   // vtable, and the Thread::PreRun calling the virtual method Run().
   ~Thread() override;
 
+  static std::unique_ptr<Thread> CreateWithSocketServer();
+  static std::unique_ptr<Thread> Create();
   static Thread* Current();
 
   // Used to catch performance regressions. Use this to disallow blocking calls
@@ -123,9 +130,7 @@ class Thread : public MessageQueue {
     const bool previous_state_;
   };
 
-  bool IsCurrent() const {
-    return Current() == this;
-  }
+  bool IsCurrent() const;
 
   // Sleeps the calling thread for the specified number of milliseconds, during
   // which time no processing is performed. Returns false if sleeping was
@@ -133,16 +138,12 @@ class Thread : public MessageQueue {
   static bool SleepMs(int millis);
 
   // Sets the thread's name, for debugging. Must be called before Start().
-  // If |obj| is non-NULL, its value is appended to |name|.
+  // If |obj| is non-null, its value is appended to |name|.
   const std::string& name() const { return name_; }
   bool SetName(const std::string& name, const void* obj);
 
-  // Sets the thread's priority. Must be called before Start().
-  ThreadPriority priority() const { return priority_; }
-  bool SetPriority(ThreadPriority priority);
-
   // Starts the execution of the thread.
-  bool Start(Runnable* runnable = NULL);
+  bool Start(Runnable* runnable = nullptr);
 
   // Tells the thread to stop and waits until it is joined.
   // Never call Stop on the current thread.  Instead use the inherited Quit
@@ -155,29 +156,30 @@ class Thread : public MessageQueue {
   // ProcessMessages occasionally.
   virtual void Run();
 
-  virtual void Send(MessageHandler *phandler, uint32 id = 0,
-      MessageData *pdata = NULL);
+  virtual void Send(const Location& posted_from,
+                    MessageHandler* phandler,
+                    uint32_t id = 0,
+                    MessageData* pdata = nullptr);
 
   // Convenience method to invoke a functor on another thread.  Caller must
   // provide the |ReturnT| template argument, which cannot (easily) be deduced.
   // Uses Send() internally, which blocks the current thread until execution
   // is complete.
-  // Ex: bool result = thread.Invoke<bool>(&MyFunctionReturningBool);
+  // Ex: bool result = thread.Invoke<bool>(RTC_FROM_HERE,
+  // &MyFunctionReturningBool);
   // NOTE: This function can only be called when synchronous calls are allowed.
   // See ScopedDisallowBlockingCalls for details.
   template <class ReturnT, class FunctorT>
-  ReturnT Invoke(const FunctorT& functor) {
-    InvokeBegin();
+  ReturnT Invoke(const Location& posted_from, const FunctorT& functor) {
     FunctorMessageHandler<ReturnT, FunctorT> handler(functor);
-    Send(&handler);
-    InvokeEnd();
-    return handler.result();
+    InvokeInternal(posted_from, &handler);
+    return handler.MoveResult();
   }
 
   // From MessageQueue
   void Clear(MessageHandler* phandler,
-             uint32 id = MQID_ANY,
-             MessageList* removed = NULL) override;
+             uint32_t id = MQID_ANY,
+             MessageList* removed = nullptr) override;
   void ReceiveSends() override;
 
   // ProcessMessages will process I/O and dispatch messages until:
@@ -241,7 +243,16 @@ class Thread : public MessageQueue {
   friend class ScopedDisallowBlockingCalls;
 
  private:
+  struct ThreadInit {
+    Thread* thread;
+    Runnable* runnable;
+  };
+
+#if defined(WEBRTC_WIN)
+  static DWORD WINAPI PreRun(LPVOID context);
+#else
   static void *PreRun(void *pv);
+#endif
 
   // ThreadManager calls this instead WrapCurrent() because
   // ThreadManager::Instance() cannot be used while ThreadManager is
@@ -254,23 +265,20 @@ class Thread : public MessageQueue {
   // Return true if the thread was started and hasn't yet stopped.
   bool running() { return running_.Wait(0); }
 
-  // Processes received "Send" requests. If |source| is not NULL, only requests
+  // Processes received "Send" requests. If |source| is not null, only requests
   // from |source| are processed, otherwise, all requests are processed.
   void ReceiveSendsFromThread(const Thread* source);
 
-  // If |source| is not NULL, pops the first "Send" message from |source| in
+  // If |source| is not null, pops the first "Send" message from |source| in
   // |sendlist_|, otherwise, pops the first "Send" message of |sendlist_|.
   // The caller must lock |crit_| before calling.
   // Returns true if there is such a message.
   bool PopSendMessageFromThread(const Thread* source, _SendMessage* msg);
 
-  // Used for tracking performance of Invoke calls.
-  void InvokeBegin();
-  void InvokeEnd();
+  void InvokeInternal(const Location& posted_from, MessageHandler* handler);
 
   std::list<_SendMessage> sendlist_;
   std::string name_;
-  ThreadPriority priority_;
   Event running_;  // Signalled means running.
 
 #if defined(WEBRTC_POSIX)
@@ -296,43 +304,27 @@ class Thread : public MessageQueue {
 
 class AutoThread : public Thread {
  public:
-  explicit AutoThread(SocketServer* ss = 0);
+  AutoThread();
   ~AutoThread() override;
 
  private:
   RTC_DISALLOW_COPY_AND_ASSIGN(AutoThread);
 };
 
-// Win32 extension for threads that need to use COM
-#if defined(WEBRTC_WIN)
-class ComThread : public Thread {
- public:
-  ComThread() {}
-  virtual ~ComThread() { Stop(); }
+// AutoSocketServerThread automatically installs itself at
+// construction and uninstalls at destruction. If a Thread object is
+// already associated with the current OS thread, it is temporarily
+// disassociated and restored by the destructor.
 
- protected:
-  virtual void Run();
+class AutoSocketServerThread : public Thread {
+ public:
+  explicit AutoSocketServerThread(SocketServer* ss);
+  ~AutoSocketServerThread() override;
 
  private:
-  RTC_DISALLOW_COPY_AND_ASSIGN(ComThread);
-};
-#endif
+  rtc::Thread* old_thread_;
 
-// Provides an easy way to install/uninstall a socketserver on a thread.
-class SocketServerScope {
- public:
-  explicit SocketServerScope(SocketServer* ss) {
-    old_ss_ = Thread::Current()->socketserver();
-    Thread::Current()->set_socketserver(ss);
-  }
-  ~SocketServerScope() {
-    Thread::Current()->set_socketserver(old_ss_);
-  }
-
- private:
-  SocketServer* old_ss_;
-
-  RTC_DISALLOW_IMPLICIT_CONSTRUCTORS(SocketServerScope);
+  RTC_DISALLOW_COPY_AND_ASSIGN(AutoSocketServerThread);
 };
 
 }  // namespace rtc

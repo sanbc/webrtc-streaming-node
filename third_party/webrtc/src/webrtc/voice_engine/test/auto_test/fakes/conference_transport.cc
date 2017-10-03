@@ -14,35 +14,35 @@
 
 #include "webrtc/base/byteorder.h"
 #include "webrtc/base/timeutils.h"
-#include "webrtc/system_wrappers/interface/sleep.h"
+#include "webrtc/system_wrappers/include/sleep.h"
+#include "webrtc/voice_engine/channel_proxy.h"
+#include "webrtc/voice_engine/voice_engine_impl.h"
 
-namespace {
-  static const unsigned int kReflectorSsrc = 0x0000;
-  static const unsigned int kLocalSsrc = 0x0001;
-  static const unsigned int kFirstRemoteSsrc = 0x0002;
-  static const webrtc::CodecInst kCodecInst =
-      {120, "opus", 48000, 960, 2, 64000};
-  static const int kAudioLevelHeaderId = 1;
-
-  static unsigned int ParseRtcpSsrc(const void* data, size_t len) {
-    const size_t ssrc_pos = 4;
-    unsigned int ssrc = 0;
-    if (len >= (ssrc_pos + sizeof(ssrc))) {
-      ssrc = rtc::GetBE32(static_cast<const char*>(data) + ssrc_pos);
-    }
-    return ssrc;
-  }
-}  // namespace
-
+namespace webrtc {
 namespace voetest {
 
+namespace {
+
+static const unsigned int kReflectorSsrc = 0x0000;
+static const unsigned int kLocalSsrc = 0x0001;
+static const unsigned int kFirstRemoteSsrc = 0x0002;
+static const webrtc::CodecInst kCodecInst = {120, "opus", 48000, 960, 2, 64000};
+static const int kAudioLevelHeaderId = 1;
+
+static unsigned int ParseRtcpSsrc(const void* data, size_t len) {
+  const size_t ssrc_pos = 4;
+  unsigned int ssrc = 0;
+  if (len >= (ssrc_pos + sizeof(ssrc))) {
+    ssrc = rtc::GetBE32(static_cast<const char*>(data) + ssrc_pos);
+  }
+  return ssrc;
+}
+
+}  // namespace
+
 ConferenceTransport::ConferenceTransport()
-    : pq_crit_(webrtc::CriticalSectionWrapper::CreateCriticalSection()),
-      stream_crit_(webrtc::CriticalSectionWrapper::CreateCriticalSection()),
-      packet_event_(webrtc::EventWrapper::Create()),
-      thread_(webrtc::ThreadWrapper::CreateThread(Run,
-                                                  this,
-                                                  "ConferenceTransport")),
+    : packet_event_(webrtc::EventWrapper::Create()),
+      thread_(Run, this, "ConferenceTransport"),
       rtt_ms_(0),
       stream_count_(0),
       rtp_header_parser_(webrtc::RtpHeaderParser::Create()) {
@@ -66,6 +66,9 @@ ConferenceTransport::ConferenceTransport()
 
   EXPECT_EQ(0, local_base_->Init());
   local_sender_ = local_base_->CreateChannel();
+  static_cast<webrtc::VoiceEngineImpl*>(local_voe_)
+      ->GetChannelProxy(local_sender_)
+      ->RegisterLegacyReceiveCodecs();
   EXPECT_EQ(0, local_network_->RegisterExternalTransport(local_sender_, *this));
   EXPECT_EQ(0, local_rtp_rtcp_->SetLocalSSRC(local_sender_, kLocalSsrc));
   EXPECT_EQ(0, local_rtp_rtcp_->
@@ -76,11 +79,14 @@ ConferenceTransport::ConferenceTransport()
 
   EXPECT_EQ(0, remote_base_->Init());
   reflector_ = remote_base_->CreateChannel();
+  static_cast<webrtc::VoiceEngineImpl*>(remote_voe_)
+      ->GetChannelProxy(reflector_)
+      ->RegisterLegacyReceiveCodecs();
   EXPECT_EQ(0, remote_network_->RegisterExternalTransport(reflector_, *this));
   EXPECT_EQ(0, remote_rtp_rtcp_->SetLocalSSRC(reflector_, kReflectorSsrc));
 
-  thread_->Start();
-  thread_->SetPriority(webrtc::kHighPriority);
+  thread_.Start();
+  thread_.SetPriority(rtc::kHighPriority);
 }
 
 ConferenceTransport::~ConferenceTransport() {
@@ -93,7 +99,7 @@ ConferenceTransport::~ConferenceTransport() {
     RemoveStream(stream->first);
   }
 
-  EXPECT_TRUE(thread_->Stop());
+  thread_.Stop();
 
   remote_file_->Release();
   remote_rtp_rtcp_->Release();
@@ -122,7 +128,7 @@ bool ConferenceTransport::SendRtcp(const uint8_t* data, size_t len) {
 
 int ConferenceTransport::GetReceiverChannelForSsrc(unsigned int sender_ssrc)
     const {
-  webrtc::CriticalSectionScoped lock(stream_crit_.get());
+  rtc::CritScope lock(&stream_crit_);
   auto it = streams_.find(sender_ssrc);
   if (it != streams_.end()) {
     return it->second.second;
@@ -134,8 +140,8 @@ void ConferenceTransport::StorePacket(Packet::Type type,
                                       const void* data,
                                       size_t len) {
   {
-    webrtc::CriticalSectionScoped lock(pq_crit_.get());
-    packet_queue_.push_back(Packet(type, data, len, rtc::Time()));
+    rtc::CritScope lock(&pq_crit_);
+    packet_queue_.push_back(Packet(type, data, len, rtc::TimeMillis()));
   }
   packet_event_->Set();
 }
@@ -200,15 +206,15 @@ bool ConferenceTransport::DispatchPackets() {
   while (true) {
     Packet packet;
     {
-      webrtc::CriticalSectionScoped lock(pq_crit_.get());
+      rtc::CritScope lock(&pq_crit_);
       if (packet_queue_.empty())
         break;
       packet = packet_queue_.front();
       packet_queue_.pop_front();
     }
 
-    int32 elapsed_time_ms = rtc::TimeSince(packet.send_time_ms_);
-    int32 sleep_ms = rtt_ms_ / 2 - elapsed_time_ms;
+    int32_t elapsed_time_ms = rtc::TimeSince(packet.send_time_ms_);
+    int32_t sleep_ms = rtt_ms_ / 2 - elapsed_time_ms;
     if (sleep_ms > 0) {
       // Every packet should be delayed by half of RTT.
       webrtc::SleepMs(sleep_ms);
@@ -226,6 +232,9 @@ void ConferenceTransport::SetRtt(unsigned int rtt_ms) {
 unsigned int ConferenceTransport::AddStream(std::string file_name,
                                             webrtc::FileFormats format) {
   const int new_sender = remote_base_->CreateChannel();
+  static_cast<webrtc::VoiceEngineImpl*>(remote_voe_)
+      ->GetChannelProxy(new_sender)
+      ->RegisterLegacyReceiveCodecs();
   EXPECT_EQ(0, remote_network_->RegisterExternalTransport(new_sender, *this));
 
   const unsigned int remote_ssrc = kFirstRemoteSsrc + stream_count_++;
@@ -239,6 +248,9 @@ unsigned int ConferenceTransport::AddStream(std::string file_name,
       new_sender, file_name.c_str(), true, false, format, 1.0));
 
   const int new_receiver = local_base_->CreateChannel();
+  static_cast<webrtc::VoiceEngineImpl*>(local_voe_)
+      ->GetChannelProxy(new_receiver)
+      ->RegisterLegacyReceiveCodecs();
   EXPECT_EQ(0, local_base_->AssociateSendChannel(new_receiver, local_sender_));
 
   EXPECT_EQ(0, local_network_->RegisterExternalTransport(new_receiver, *this));
@@ -247,14 +259,14 @@ unsigned int ConferenceTransport::AddStream(std::string file_name,
   EXPECT_EQ(0, local_rtp_rtcp_->SetLocalSSRC(new_receiver, kLocalSsrc));
 
   {
-    webrtc::CriticalSectionScoped lock(stream_crit_.get());
+    rtc::CritScope lock(&stream_crit_);
     streams_[remote_ssrc] = std::make_pair(new_sender, new_receiver);
   }
   return remote_ssrc;  // remote ssrc used as stream id.
 }
 
 bool ConferenceTransport::RemoveStream(unsigned int id) {
-  webrtc::CriticalSectionScoped lock(stream_crit_.get());
+  rtc::CritScope lock(&stream_crit_);
   auto it = streams_.find(id);
   if (it == streams_.end()) {
     return false;
@@ -287,4 +299,6 @@ bool ConferenceTransport::GetReceiverStatistics(unsigned int id,
   EXPECT_EQ(0, local_rtp_rtcp_->GetRTCPStatistics(dst, *stats));
   return true;
 }
+
 }  // namespace voetest
+}  // namespace webrtc

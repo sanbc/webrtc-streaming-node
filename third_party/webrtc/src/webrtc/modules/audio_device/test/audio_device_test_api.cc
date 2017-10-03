@@ -12,14 +12,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "webrtc/modules/audio_device/test/audio_device_test_defines.h"
+#include <memory>
 
-#include "testing/gtest/include/gtest/gtest.h"
-#include "webrtc/test/testsupport/fileutils.h"
-
+#include "webrtc/base/location.h"
 #include "webrtc/modules/audio_device/audio_device_config.h"
 #include "webrtc/modules/audio_device/audio_device_impl.h"
-#include "webrtc/system_wrappers/interface/sleep.h"
+#include "webrtc/modules/audio_device/test/audio_device_test_defines.h"
+#include "webrtc/modules/utility/include/process_thread.h"
+#include "webrtc/system_wrappers/include/sleep.h"
+#include "webrtc/test/gtest.h"
+#include "webrtc/test/testsupport/fileutils.h"
 
 // Helper functions
 #if defined(ANDROID)
@@ -46,20 +48,20 @@ using namespace webrtc;
 
 class AudioEventObserverAPI: public AudioDeviceObserver {
  public:
-  AudioEventObserverAPI(AudioDeviceModule* audioDevice)
+  AudioEventObserverAPI(
+      const rtc::scoped_refptr<AudioDeviceModule>& audioDevice)
       : error_(kRecordingError),
         warning_(kRecordingWarning),
-        audio_device_(audioDevice) {
-  }
+        audio_device_(audioDevice) {}
 
-  ~AudioEventObserverAPI() {}
+  ~AudioEventObserverAPI() override {}
 
-  virtual void OnErrorIsReported(const ErrorCode error) {
+  void OnErrorIsReported(const ErrorCode error) override {
     TEST_LOG("\n[*** ERROR ***] => OnErrorIsReported(%d)\n\n", error);
     error_ = error;
   }
 
-  virtual void OnWarningIsReported(const WarningCode warning) {
+  void OnWarningIsReported(const WarningCode warning) override {
     TEST_LOG("\n[*** WARNING ***] => OnWarningIsReported(%d)\n\n", warning);
     warning_ = warning;
     EXPECT_EQ(0, audio_device_->StopRecording());
@@ -70,22 +72,22 @@ class AudioEventObserverAPI: public AudioDeviceObserver {
   ErrorCode error_;
   WarningCode warning_;
  private:
-  AudioDeviceModule* audio_device_;
+  rtc::scoped_refptr<AudioDeviceModule> audio_device_;
 };
 
 class AudioTransportAPI: public AudioTransport {
  public:
-  AudioTransportAPI(AudioDeviceModule* audioDevice)
+  AudioTransportAPI(const rtc::scoped_refptr<AudioDeviceModule>& audioDevice)
       : rec_count_(0),
         play_count_(0) {
   }
 
-  ~AudioTransportAPI() {}
+  ~AudioTransportAPI() override {}
 
   int32_t RecordedDataIsAvailable(const void* audioSamples,
                                   const size_t nSamples,
                                   const size_t nBytesPerSample,
-                                  const uint8_t nChannels,
+                                  const size_t nChannels,
                                   const uint32_t sampleRate,
                                   const uint32_t totalDelay,
                                   const int32_t clockSkew,
@@ -110,7 +112,7 @@ class AudioTransportAPI: public AudioTransport {
 
   int32_t NeedMorePlayData(const size_t nSamples,
                            const size_t nBytesPerSample,
-                           const uint8_t nChannels,
+                           const size_t nChannels,
                            const uint32_t sampleRate,
                            void* audioSamples,
                            size_t& nSamplesOut,
@@ -128,29 +130,21 @@ class AudioTransportAPI: public AudioTransport {
     return 0;
   }
 
-  int OnDataAvailable(const int voe_channels[],
-                      int number_of_voe_channels,
-                      const int16_t* audio_data,
-                      int sample_rate,
-                      int number_of_channels,
-                      size_t number_of_frames,
-                      int audio_delay_milliseconds,
-                      int current_volume,
-                      bool key_pressed,
-                      bool need_audio_processing) override {
-    return 0;
-  }
-
-  void PushCaptureData(int voe_channel, const void* audio_data,
-                       int bits_per_sample, int sample_rate,
-                       int number_of_channels,
+  void PushCaptureData(int voe_channel,
+                       const void* audio_data,
+                       int bits_per_sample,
+                       int sample_rate,
+                       size_t number_of_channels,
                        size_t number_of_frames) override {}
 
-  void PullRenderData(int bits_per_sample, int sample_rate,
-                      int number_of_channels, size_t number_of_frames,
+  void PullRenderData(int bits_per_sample,
+                      int sample_rate,
+                      size_t number_of_channels,
+                      size_t number_of_frames,
                       void* audio_data,
                       int64_t* elapsed_time_ms,
                       int64_t* ntp_time_ms) override {}
+
  private:
   uint32_t rec_count_;
   uint32_t play_count_;
@@ -160,7 +154,7 @@ class AudioDeviceAPITest: public testing::Test {
  protected:
   AudioDeviceAPITest() {}
 
-  virtual ~AudioDeviceAPITest() {}
+  ~AudioDeviceAPITest() override {}
 
   static void SetUpTestCase() {
     process_thread_ = ProcessThread::Create("ProcessThread");
@@ -168,85 +162,54 @@ class AudioDeviceAPITest: public testing::Test {
 
     // Windows:
     //      if (WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
-    //          user can select between default (Core) or Wave
-    //      else
-    //          user can select between default (Wave) or Wave
+    //          user can select only the default (Core)
     const int32_t kId = 444;
 
-#if defined(_WIN32)
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kLinuxAlsaAudio)) == NULL);
 #if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
     TEST_LOG("WEBRTC_WINDOWS_CORE_AUDIO_BUILD is defined!\n\n");
     // create default implementation (=Core Audio) instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kPlatformDefaultAudio)) != NULL);
-    audio_device_->AddRef();
-    EXPECT_EQ(0, audio_device_->Release());
-    // create non-default (=Wave Audio) instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsWaveAudio)) != NULL);
-    audio_device_->AddRef();
-    EXPECT_EQ(0, audio_device_->Release());
+    EXPECT_EQ(0, audio_device_.release()->Release());
     // explicitly specify usage of Core Audio (same as default)
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kWindowsCoreAudio)) != NULL);
-#else
-    TEST_LOG("WEBRTC_WINDOWS_CORE_AUDIO_BUILD is *not* defined!\n");
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsCoreAudio)) == NULL);
-    // create default implementation (=Wave Audio) instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kPlatformDefaultAudio)) != NULL);
-    audio_device_->AddRef();
-    EXPECT_EQ(0, audio_device_->Release());
-    // explicitly specify usage of Wave Audio (same as default)
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsWaveAudio)) != NULL);
-#endif
 #endif
 
 #if defined(ANDROID)
     // Fails tests
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsWaveAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kWindowsCoreAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kLinuxAlsaAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kLinuxPulseAudio)) == NULL);
     // Create default implementation instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kPlatformDefaultAudio)) != NULL);
 #elif defined(WEBRTC_LINUX)
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsWaveAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kWindowsCoreAudio)) == NULL);
     // create default implementation instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kPlatformDefaultAudio)) != NULL);
-    audio_device_->AddRef();
     EXPECT_EQ(0, audio_device_->Terminate());
-    EXPECT_EQ(0, audio_device_->Release());
+    EXPECT_EQ(0, audio_device_.release()->Release());
     // explicitly specify usage of Pulse Audio (same as default)
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kLinuxPulseAudio)) != NULL);
 #endif
 
 #if defined(WEBRTC_MAC)
     // Fails tests
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
-                kId, AudioDeviceModule::kWindowsWaveAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kWindowsCoreAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kLinuxAlsaAudio)) == NULL);
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kLinuxPulseAudio)) == NULL);
     // Create default implementation instance
-    EXPECT_TRUE((audio_device_ = AudioDeviceModuleImpl::Create(
+    EXPECT_TRUE((audio_device_ = AudioDeviceModule::Create(
                 kId, AudioDeviceModule::kPlatformDefaultAudio)) != NULL);
 #endif
 
@@ -254,10 +217,7 @@ class AudioDeviceAPITest: public testing::Test {
       FAIL() << "Failed creating audio device object!";
     }
 
-    // The ADM is reference counted.
-    audio_device_->AddRef();
-
-    process_thread_->RegisterModule(audio_device_);
+    process_thread_->RegisterModule(audio_device_, RTC_FROM_HERE);
 
     AudioDeviceModule::AudioLayer audio_layer =
         AudioDeviceModule::kPlatformDefaultAudio;
@@ -281,13 +241,12 @@ class AudioDeviceAPITest: public testing::Test {
       delete audio_transport_;
       audio_transport_ = NULL;
     }
-    if (audio_device_) {
-      EXPECT_EQ(0, audio_device_->Release());
-    }
+    if (audio_device_)
+      EXPECT_EQ(0, audio_device_.release()->Release());
     PRINT_TEST_RESULTS;
   }
 
-  void SetUp() {
+  void SetUp() override {
     if (linux_alsa_) {
       FAIL() << "API Test is not available on ALSA on Linux!";
     }
@@ -295,9 +254,7 @@ class AudioDeviceAPITest: public testing::Test {
     EXPECT_TRUE(audio_device_->Initialized());
   }
 
-  void TearDown() {
-    EXPECT_EQ(0, audio_device_->Terminate());
-  }
+  void TearDown() override { EXPECT_EQ(0, audio_device_->Terminate()); }
 
   void CheckVolume(uint32_t expected, uint32_t actual) {
     // Mac and Windows have lower resolution on the volume settings.
@@ -323,16 +280,16 @@ class AudioDeviceAPITest: public testing::Test {
 
   // TODO(henrika): Get rid of globals.
   static bool linux_alsa_;
-  static rtc::scoped_ptr<ProcessThread> process_thread_;
-  static AudioDeviceModule* audio_device_;
+  static std::unique_ptr<ProcessThread> process_thread_;
+  static rtc::scoped_refptr<AudioDeviceModule> audio_device_;
   static AudioTransportAPI* audio_transport_;
   static AudioEventObserverAPI* event_observer_;
 };
 
 // Must be initialized like this to handle static SetUpTestCase() above.
 bool AudioDeviceAPITest::linux_alsa_ = false;
-rtc::scoped_ptr<ProcessThread> AudioDeviceAPITest::process_thread_;
-AudioDeviceModule* AudioDeviceAPITest::audio_device_ = NULL;
+std::unique_ptr<ProcessThread> AudioDeviceAPITest::process_thread_;
+rtc::scoped_refptr<AudioDeviceModule> AudioDeviceAPITest::audio_device_;
 AudioTransportAPI* AudioDeviceAPITest::audio_transport_ = NULL;
 AudioEventObserverAPI* AudioDeviceAPITest::event_observer_ = NULL;
 
@@ -486,7 +443,7 @@ TEST_F(AudioDeviceAPITest, SetRecordingDevice) {
 
 TEST_F(AudioDeviceAPITest, PlayoutIsAvailable) {
   bool available;
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   EXPECT_TRUE(audio_device_->SetPlayoutDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
   EXPECT_EQ(0, audio_device_->PlayoutIsAvailable(&available));
@@ -509,7 +466,7 @@ TEST_F(AudioDeviceAPITest, PlayoutIsAvailable) {
 
 TEST_F(AudioDeviceAPITest, RecordingIsAvailable) {
   bool available;
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   EXPECT_EQ(0, audio_device_->SetRecordingDevice(
       AudioDeviceModule::kDefaultCommunicationDevice));
   EXPECT_EQ(0, audio_device_->RecordingIsAvailable(&available));
@@ -638,7 +595,7 @@ TEST_F(AudioDeviceAPITest, StartAndStopPlayout) {
   EXPECT_EQ(-1, audio_device_->StartPlayout());
   EXPECT_EQ(0, audio_device_->StopPlayout());
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetPlayoutDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -649,7 +606,7 @@ TEST_F(AudioDeviceAPITest, StartAndStopPlayout) {
     EXPECT_EQ(0, audio_device_->InitPlayout());
     EXPECT_EQ(0, audio_device_->StartPlayout());
     EXPECT_TRUE(audio_device_->Playing());
-    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+    EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
     EXPECT_EQ(0, audio_device_->StopPlayout());
     EXPECT_FALSE(audio_device_->Playing());
     EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
@@ -664,9 +621,10 @@ TEST_F(AudioDeviceAPITest, StartAndStopPlayout) {
     EXPECT_EQ(0, audio_device_->InitPlayout());
     EXPECT_EQ(0, audio_device_->StartPlayout());
     EXPECT_TRUE(audio_device_->Playing());
-    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+    EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
     EXPECT_EQ(0, audio_device_->StopPlayout());
     EXPECT_FALSE(audio_device_->Playing());
+    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
   }
 
   // repeat test for all devices
@@ -679,9 +637,10 @@ TEST_F(AudioDeviceAPITest, StartAndStopPlayout) {
       EXPECT_EQ(0, audio_device_->InitPlayout());
       EXPECT_EQ(0, audio_device_->StartPlayout());
       EXPECT_TRUE(audio_device_->Playing());
-      EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+      EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
       EXPECT_EQ(0, audio_device_->StopPlayout());
       EXPECT_FALSE(audio_device_->Playing());
+      EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
     }
   }
 }
@@ -695,7 +654,7 @@ TEST_F(AudioDeviceAPITest, StartAndStopRecording) {
   EXPECT_EQ(-1, audio_device_->StartRecording());
   EXPECT_EQ(0, audio_device_->StopRecording());
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -706,7 +665,7 @@ TEST_F(AudioDeviceAPITest, StartAndStopRecording) {
     EXPECT_EQ(0, audio_device_->InitRecording());
     EXPECT_EQ(0, audio_device_->StartRecording());
     EXPECT_TRUE(audio_device_->Recording());
-    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+    EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
     EXPECT_EQ(0, audio_device_->StopRecording());
     EXPECT_FALSE(audio_device_->Recording());
     EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
@@ -721,9 +680,10 @@ TEST_F(AudioDeviceAPITest, StartAndStopRecording) {
     EXPECT_EQ(0, audio_device_->InitRecording());
     EXPECT_EQ(0, audio_device_->StartRecording());
     EXPECT_TRUE(audio_device_->Recording());
-    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+    EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
     EXPECT_EQ(0, audio_device_->StopRecording());
     EXPECT_FALSE(audio_device_->Recording());
+    EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
   }
 
   // repeat test for all devices
@@ -736,65 +696,14 @@ TEST_F(AudioDeviceAPITest, StartAndStopRecording) {
       EXPECT_EQ(0, audio_device_->InitRecording());
       EXPECT_EQ(0, audio_device_->StartRecording());
       EXPECT_TRUE(audio_device_->Recording());
-      EXPECT_EQ(0, audio_device_->RegisterAudioCallback(audio_transport_));
+      EXPECT_EQ(-1, audio_device_->RegisterAudioCallback(audio_transport_));
       EXPECT_EQ(0, audio_device_->StopRecording());
       EXPECT_FALSE(audio_device_->Recording());
+      EXPECT_EQ(0, audio_device_->RegisterAudioCallback(NULL));
     }
   }
 }
 
-#if defined(_WIN32) && !defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
-TEST_F(AudioDeviceAPITest, SetAndGetWaveOutVolume) {
-  uint32_t vol(0);
-  // NOTE 1: Windows Wave only!
-  // NOTE 2: It seems like the waveOutSetVolume API returns
-  // MMSYSERR_NOTSUPPORTED on some Vista machines!
-  const uint16_t maxVol(0xFFFF);
-  uint16_t volL, volR;
-
-  CheckInitialPlayoutStates();
-
-  // make dummy test to see if this API is supported
-  int32_t works = audio_device_->SetWaveOutVolume(vol, vol);
-  WARNING(works == 0);
-
-  if (works == 0)
-  {
-    // set volume without open playout device
-    for (vol = 0; vol <= maxVol; vol += (maxVol/5))
-    {
-      EXPECT_EQ(0, audio_device_->SetWaveOutVolume(vol, vol));
-      EXPECT_EQ(0, audio_device_->WaveOutVolume(volL, volR));
-      EXPECT_TRUE((volL == vol) && (volR == vol));
-    }
-
-    // repeat test but this time with an open (default) output device
-    EXPECT_EQ(0, audio_device_->SetPlayoutDevice(
-        AudioDeviceModule::kDefaultDevice));
-    EXPECT_EQ(0, audio_device_->InitPlayout());
-    EXPECT_TRUE(audio_device_->PlayoutIsInitialized());
-    for (vol = 0; vol <= maxVol; vol += (maxVol/5))
-    {
-      EXPECT_EQ(0, audio_device_->SetWaveOutVolume(vol, vol));
-      EXPECT_EQ(0, audio_device_->WaveOutVolume(volL, volR));
-      EXPECT_TRUE((volL == vol) && (volR == vol));
-    }
-
-    // as above but while playout is active
-    EXPECT_EQ(0, audio_device_->StartPlayout());
-    EXPECT_TRUE(audio_device_->Playing());
-    for (vol = 0; vol <= maxVol; vol += (maxVol/5))
-    {
-      EXPECT_EQ(0, audio_device_->SetWaveOutVolume(vol, vol));
-      EXPECT_EQ(0, audio_device_->WaveOutVolume(volL, volR));
-      EXPECT_TRUE((volL == vol) && (volR == vol));
-    }
-  }
-
-  EXPECT_EQ(0, audio_device_->StopPlayout());
-  EXPECT_FALSE(audio_device_->Playing());
-}
-#endif  // defined(_WIN32) && !defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
 
 TEST_F(AudioDeviceAPITest, InitSpeaker) {
   // NOTE: By calling Terminate (in TearDown) followed by Init (in SetUp) we
@@ -868,7 +777,7 @@ TEST_F(AudioDeviceAPITest, SpeakerVolumeIsAvailable) {
   CheckInitialPlayoutStates();
   bool available;
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // check the kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetPlayoutDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -915,20 +824,7 @@ TEST_F(AudioDeviceAPITest, SpeakerVolumeTests) {
   EXPECT_EQ(-1, audio_device_->MinSpeakerVolume(&minVolume));
   EXPECT_EQ(-1, audio_device_->SpeakerVolumeStepSize(&stepSize));
 
-#if defined(_WIN32) && !defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
-  // test for warning (can e.g. happen on Vista with Wave API)
-  EXPECT_EQ(0,
-            audio_device_->SetPlayoutDevice(AudioDeviceModule::kDefaultDevice));
-  EXPECT_EQ(0, audio_device_->SpeakerVolumeIsAvailable(&available));
-  if (available) {
-    EXPECT_EQ(0, audio_device_->InitSpeaker());
-    EXPECT_EQ(0, audio_device_->SetSpeakerVolume(19001));
-    EXPECT_EQ(0, audio_device_->SpeakerVolume(&volume));
-    WARNING(volume == 19001);
-  }
-#endif
-
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // use kDefaultCommunicationDevice and modify/retrieve the volume
   EXPECT_TRUE(audio_device_->SetPlayoutDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -938,7 +834,7 @@ TEST_F(AudioDeviceAPITest, SpeakerVolumeTests) {
     EXPECT_EQ(0, audio_device_->MaxSpeakerVolume(&maxVolume));
     EXPECT_EQ(0, audio_device_->MinSpeakerVolume(&minVolume));
     EXPECT_EQ(0, audio_device_->SpeakerVolumeStepSize(&stepSize));
-    for (vol = minVolume; vol < (int)maxVolume; vol += 20*stepSize) {
+    for (vol = minVolume; vol < (unsigned int)maxVolume; vol += 20*stepSize) {
       EXPECT_EQ(0, audio_device_->SetSpeakerVolume(vol));
       EXPECT_EQ(0, audio_device_->SpeakerVolume(&volume));
       CheckVolume(volume, vol);
@@ -1012,7 +908,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneVolumeIsAvailable) {
   CheckInitialRecordingStates();
   bool available;
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // check the kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1040,9 +936,15 @@ TEST_F(AudioDeviceAPITest, MicrophoneVolumeIsAvailable) {
 // MicrophoneVolume
 // MaxMicrophoneVolume
 // MinMicrophoneVolume
-// NOTE: Disabled on mac due to issue 257.
-#ifndef WEBRTC_MAC
-TEST_F(AudioDeviceAPITest, MicrophoneVolumeTests) {
+
+// Disabled on Mac and Linux,
+// see https://bugs.chromium.org/p/webrtc/issues/detail?id=5414
+#if defined(WEBRTC_MAC) || defined(WEBRTC_LINUX)
+#define MAYBE_MicrophoneVolumeTests DISABLED_MicrophoneVolumeTests
+#else
+#define MAYBE_MicrophoneVolumeTests MicrophoneVolumeTests
+#endif
+TEST_F(AudioDeviceAPITest, MAYBE_MicrophoneVolumeTests) {
   uint32_t vol(0);
   uint32_t volume(0);
   uint32_t maxVolume(0);
@@ -1059,21 +961,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneVolumeTests) {
   EXPECT_EQ(-1, audio_device_->MinMicrophoneVolume(&minVolume));
   EXPECT_EQ(-1, audio_device_->MicrophoneVolumeStepSize(&stepSize));
 
-#if defined(_WIN32) && !defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
-  // test for warning (can e.g. happen on Vista with Wave API)
-  EXPECT_EQ(0, audio_device_->SetRecordingDevice(
-      AudioDeviceModule::kDefaultDevice));
-  EXPECT_EQ(0, audio_device_->MicrophoneVolumeIsAvailable(&available));
-  if (available)
-  {
-    EXPECT_EQ(0, audio_device_->InitMicrophone());
-    EXPECT_EQ(0, audio_device_->SetMicrophoneVolume(19001));
-    EXPECT_EQ(0, audio_device_->MicrophoneVolume(&volume));
-    WARNING(volume == 19001);
-  }
-#endif
-
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // initialize kDefaultCommunicationDevice and modify/retrieve the volume
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1084,7 +972,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneVolumeTests) {
     EXPECT_EQ(0, audio_device_->MaxMicrophoneVolume(&maxVolume));
     EXPECT_EQ(0, audio_device_->MinMicrophoneVolume(&minVolume));
     EXPECT_EQ(0, audio_device_->MicrophoneVolumeStepSize(&stepSize));
-    for (vol = minVolume; vol < (int)maxVolume; vol += 10*stepSize)
+    for (vol = minVolume; vol < (unsigned int)maxVolume; vol += 10*stepSize)
     {
       EXPECT_EQ(0, audio_device_->SetMicrophoneVolume(vol));
       EXPECT_EQ(0, audio_device_->MicrophoneVolume(&volume));
@@ -1135,12 +1023,11 @@ TEST_F(AudioDeviceAPITest, MicrophoneVolumeTests) {
     EXPECT_EQ(0, audio_device_->SetMicrophoneVolume(maxVolume/10));
   }
 }
-#endif  // !WEBRTC_MAC
 
 TEST_F(AudioDeviceAPITest, SpeakerMuteIsAvailable) {
   bool available;
   CheckInitialPlayoutStates();
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // check the kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetPlayoutDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1166,7 +1053,7 @@ TEST_F(AudioDeviceAPITest, SpeakerMuteIsAvailable) {
 TEST_F(AudioDeviceAPITest, MicrophoneMuteIsAvailable) {
   bool available;
   CheckInitialRecordingStates();
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // check the kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1192,7 +1079,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneMuteIsAvailable) {
 TEST_F(AudioDeviceAPITest, MicrophoneBoostIsAvailable) {
   bool available;
   CheckInitialRecordingStates();
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // check the kDefaultCommunicationDevice
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1224,7 +1111,7 @@ TEST_F(AudioDeviceAPITest, SpeakerMuteTests) {
   // requires initialization
   EXPECT_EQ(-1, audio_device_->SpeakerMute(&enabled));
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // initialize kDefaultCommunicationDevice and modify/retrieve the mute state
   EXPECT_EQ(0, audio_device_->SetPlayoutDevice(
       AudioDeviceModule::kDefaultCommunicationDevice));
@@ -1278,7 +1165,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneMuteTests) {
   bool enabled;
   EXPECT_EQ(-1, audio_device_->MicrophoneMute(&enabled));
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // initialize kDefaultCommunicationDevice and modify/retrieve the mute
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1332,7 +1219,7 @@ TEST_F(AudioDeviceAPITest, MicrophoneBoostTests) {
   // requires initialization
   EXPECT_EQ(-1, audio_device_->MicrophoneBoost(&enabled));
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // initialize kDefaultCommunicationDevice and modify/retrieve the boost
   EXPECT_TRUE(audio_device_->SetRecordingDevice(
           AudioDeviceModule::kDefaultCommunicationDevice) == 0);
@@ -1505,46 +1392,14 @@ TEST_F(AudioDeviceAPITest, StereoRecordingTests) {
   }
 }
 
-TEST_F(AudioDeviceAPITest, RecordingChannelTests) {
-  // the user in Win Core Audio
-  AudioDeviceModule::ChannelType channelType(AudioDeviceModule::kChannelBoth);
-  CheckInitialRecordingStates();
-  EXPECT_FALSE(audio_device_->Playing());
-
-  // fail tests
-  EXPECT_EQ(0, audio_device_->SetStereoRecording(false));
-  EXPECT_EQ(-1, audio_device_->SetRecordingChannel(
-      AudioDeviceModule::kChannelBoth));
-
-  // initialize kDefaultCommunicationDevice and modify/retrieve stereo support
-  EXPECT_EQ(0, audio_device_->SetRecordingDevice(
-      MACRO_DEFAULT_COMMUNICATION_DEVICE));
-  bool available;
-  EXPECT_EQ(0, audio_device_->StereoRecordingIsAvailable(&available));
-  if (available) {
-    EXPECT_EQ(0, audio_device_->SetStereoRecording(true));
-    EXPECT_EQ(0, audio_device_->SetRecordingChannel(
-        AudioDeviceModule::kChannelBoth));
-    EXPECT_EQ(0, audio_device_->RecordingChannel(&channelType));
-    EXPECT_EQ(AudioDeviceModule::kChannelBoth, channelType);
-    EXPECT_EQ(0, audio_device_->SetRecordingChannel(
-        AudioDeviceModule::kChannelLeft));
-    EXPECT_EQ(0, audio_device_->RecordingChannel(&channelType));
-    EXPECT_EQ(AudioDeviceModule::kChannelLeft, channelType);
-    EXPECT_EQ(0, audio_device_->SetRecordingChannel(
-        AudioDeviceModule::kChannelRight));
-    EXPECT_EQ(0, audio_device_->RecordingChannel(&channelType));
-    EXPECT_EQ(AudioDeviceModule::kChannelRight, channelType);
-  }
-}
-
 TEST_F(AudioDeviceAPITest, PlayoutBufferTests) {
   AudioDeviceModule::BufferType bufferType;
   uint16_t sizeMS(0);
 
   CheckInitialPlayoutStates();
   EXPECT_EQ(0, audio_device_->PlayoutBuffer(&bufferType, &sizeMS));
-#if defined(_WIN32) || defined(ANDROID) || defined(WEBRTC_IOS)
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD) || defined(ANDROID) || \
+    defined(WEBRTC_IOS)
   EXPECT_EQ(AudioDeviceModule::kAdaptiveBufferSize, bufferType);
 #else
   EXPECT_EQ(AudioDeviceModule::kFixedBufferSize, bufferType);
@@ -1571,7 +1426,7 @@ TEST_F(AudioDeviceAPITest, PlayoutBufferTests) {
 
   // bulk tests (all should be successful)
   EXPECT_FALSE(audio_device_->PlayoutIsInitialized());
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   EXPECT_EQ(0, audio_device_->SetPlayoutBuffer(
       AudioDeviceModule::kAdaptiveBufferSize, 0));
   EXPECT_EQ(0, audio_device_->PlayoutBuffer(&bufferType, &sizeMS));
@@ -1603,7 +1458,7 @@ TEST_F(AudioDeviceAPITest, PlayoutBufferTests) {
   EXPECT_EQ(100, sizeMS);
 #endif
 
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   // restore default
   EXPECT_EQ(0, audio_device_->SetPlayoutBuffer(
       AudioDeviceModule::kAdaptiveBufferSize, 0));
@@ -1635,7 +1490,7 @@ TEST_F(AudioDeviceAPITest, CPULoad) {
   uint16_t load(0);
 
   // bulk tests
-#ifdef _WIN32
+#if defined(WEBRTC_WINDOWS_CORE_AUDIO_BUILD)
   EXPECT_EQ(0, audio_device_->CPULoad(&load));
   EXPECT_EQ(0, load);
 #else
@@ -1750,82 +1605,4 @@ TEST_F(AudioDeviceAPITest, PlayoutSampleRate) {
   EXPECT_TRUE((sampleRate == 44000) || (sampleRate == 16000) ||
               (sampleRate == 8000));
 #endif
-}
-
-TEST_F(AudioDeviceAPITest, ResetAudioDevice) {
-  CheckInitialPlayoutStates();
-  CheckInitialRecordingStates();
-  EXPECT_EQ(0, audio_device_->SetPlayoutDevice(MACRO_DEFAULT_DEVICE));
-  EXPECT_EQ(0, audio_device_->SetRecordingDevice(MACRO_DEFAULT_DEVICE));
-
-#if defined(WEBRTC_IOS)
-  // Not playing or recording, should just return 0
-  EXPECT_EQ(0, audio_device_->ResetAudioDevice());
-
-  EXPECT_EQ(0, audio_device_->InitRecording());
-  EXPECT_EQ(0, audio_device_->StartRecording());
-  EXPECT_EQ(0, audio_device_->InitPlayout());
-  EXPECT_EQ(0, audio_device_->StartPlayout());
-  for (int l=0; l<20; ++l)
-  {
-    TEST_LOG("Resetting sound device several time with pause %d ms\n", l);
-    EXPECT_EQ(0, audio_device_->ResetAudioDevice());
-    SleepMs(l);
-  }
-#else
-  // Fail tests
-  EXPECT_EQ(-1, audio_device_->ResetAudioDevice());
-
-  // TODO(kjellander): Fix so these tests pass on Mac.
-#if !defined(WEBRTC_MAC)
-  EXPECT_EQ(0, audio_device_->InitRecording());
-  EXPECT_EQ(0, audio_device_->StartRecording());
-  EXPECT_EQ(0, audio_device_->InitPlayout());
-  EXPECT_EQ(0, audio_device_->StartPlayout());
-#endif
-  EXPECT_EQ(-1, audio_device_->ResetAudioDevice());
-#endif
-  EXPECT_EQ(0, audio_device_->StopRecording());
-  EXPECT_EQ(0, audio_device_->StopPlayout());
-}
-
-TEST_F(AudioDeviceAPITest, SetPlayoutSpeaker) {
-  CheckInitialPlayoutStates();
-  EXPECT_EQ(0, audio_device_->SetPlayoutDevice(MACRO_DEFAULT_DEVICE));
-
-  bool loudspeakerOn(false);
-#if defined(WEBRTC_IOS)
-  // Not playing or recording, should just return a success
-  EXPECT_EQ(0, audio_device_->SetLoudspeakerStatus(true));
-  EXPECT_EQ(0, audio_device_->GetLoudspeakerStatus(&loudspeakerOn));
-  EXPECT_TRUE(loudspeakerOn);
-  EXPECT_EQ(0, audio_device_->SetLoudspeakerStatus(false));
-  EXPECT_EQ(0, audio_device_->GetLoudspeakerStatus(&loudspeakerOn));
-  EXPECT_FALSE(loudspeakerOn);
-
-  EXPECT_EQ(0, audio_device_->InitPlayout());
-  EXPECT_EQ(0, audio_device_->StartPlayout());
-  EXPECT_EQ(0, audio_device_->SetLoudspeakerStatus(true));
-  EXPECT_EQ(0, audio_device_->GetLoudspeakerStatus(&loudspeakerOn));
-  EXPECT_TRUE(loudspeakerOn);
-  EXPECT_EQ(0, audio_device_->SetLoudspeakerStatus(false));
-  EXPECT_EQ(0, audio_device_->GetLoudspeakerStatus(&loudspeakerOn));
-  EXPECT_FALSE(loudspeakerOn);
-
-#else
-  // Fail tests
-  EXPECT_EQ(-1, audio_device_->SetLoudspeakerStatus(true));
-  EXPECT_EQ(-1, audio_device_->SetLoudspeakerStatus(false));
-  EXPECT_EQ(-1, audio_device_->SetLoudspeakerStatus(true));
-  EXPECT_EQ(-1, audio_device_->SetLoudspeakerStatus(false));
-
-  // TODO(kjellander): Fix so these tests pass on Mac.
-#if !defined(WEBRTC_MAC)
-  EXPECT_EQ(0, audio_device_->InitPlayout());
-  EXPECT_EQ(0, audio_device_->StartPlayout());
-#endif
-
-  EXPECT_EQ(-1, audio_device_->GetLoudspeakerStatus(&loudspeakerOn));
-#endif
-  EXPECT_EQ(0, audio_device_->StopPlayout());
 }

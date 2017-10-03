@@ -11,10 +11,12 @@
 #ifndef WEBRTC_AUDIO_DEVICE_AUDIO_DEVICE_ALSA_LINUX_H
 #define WEBRTC_AUDIO_DEVICE_AUDIO_DEVICE_ALSA_LINUX_H
 
+#include <memory>
+
+#include "webrtc/base/criticalsection.h"
+#include "webrtc/base/platform_thread.h"
 #include "webrtc/modules/audio_device/audio_device_generic.h"
 #include "webrtc/modules/audio_device/linux/audio_mixer_manager_alsa_linux.h"
-#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
-#include "webrtc/system_wrappers/interface/thread_wrapper.h"
 
 #if defined(USE_X11)
 #include <X11/Xlib.h>
@@ -39,7 +41,7 @@ public:
         AudioDeviceModule::AudioLayer& audioLayer) const override;
 
     // Main initializaton and termination
-    int32_t Init() override;
+    InitStatus Init() override;
     int32_t Terminate() override;
     bool Initialized() const override;
 
@@ -143,7 +145,6 @@ public:
     // CPU load
     int32_t CPULoad(uint16_t& load) const override;
 
-public:
  bool PlayoutWarning() const override;
  bool PlayoutError() const override;
  bool RecordingWarning() const override;
@@ -153,7 +154,6 @@ public:
  void ClearRecordingWarning() override;
  void ClearRecordingError() override;
 
-public:
  void AttachAudioBuffer(AudioDeviceBuffer* audioBuffer) override;
 
 private:
@@ -164,29 +164,27 @@ private:
                            const int32_t ednLen = 0) const;
     int32_t ErrorRecovery(int32_t error, snd_pcm_t* deviceHandle);
 
-private:
     bool KeyPressed() const;
 
-private:
     void Lock() EXCLUSIVE_LOCK_FUNCTION(_critSect) { _critSect.Enter(); };
     void UnLock() UNLOCK_FUNCTION(_critSect) { _critSect.Leave(); };
-private:
+
     inline int32_t InputSanityCheckAfterUnlockedPeriod() const;
     inline int32_t OutputSanityCheckAfterUnlockedPeriod() const;
 
-private:
     static bool RecThreadFunc(void*);
     static bool PlayThreadFunc(void*);
     bool RecThreadProcess();
     bool PlayThreadProcess();
 
-private:
     AudioDeviceBuffer* _ptrAudioBuffer;
 
-    CriticalSectionWrapper& _critSect;
+    rtc::CriticalSection _critSect;
 
-    rtc::scoped_ptr<ThreadWrapper> _ptrThreadRec;
-    rtc::scoped_ptr<ThreadWrapper> _ptrThreadPlay;
+    // TODO(pbos): Make plain members and start/stop instead of resetting these
+    // pointers. A thread can be reused.
+    std::unique_ptr<rtc::PlatformThread> _ptrThreadRec;
+    std::unique_ptr<rtc::PlatformThread> _ptrThreadPlay;
 
     int32_t _id;
 
@@ -222,7 +220,6 @@ private:
 
     AudioDeviceModule::BufferType _playBufType;
 
-private:
     bool _initialized;
     bool _recording;
     bool _playing;

@@ -10,38 +10,46 @@
 
 #include "webrtc/base/asyncinvoker.h"
 
+#include "webrtc/base/atomicops.h"
 #include "webrtc/base/checks.h"
 #include "webrtc/base/logging.h"
 
 namespace rtc {
 
-AsyncInvoker::AsyncInvoker() : destroying_(false) {}
+AsyncInvoker::AsyncInvoker() : invocation_complete_(false, false) {}
 
 AsyncInvoker::~AsyncInvoker() {
   destroying_ = true;
-  SignalInvokerDestroyed();
   // Messages for this need to be cleared *before* our destructor is complete.
   MessageQueueManager::Clear(this);
+  // And we need to wait for any invocations that are still in progress on
+  // other threads.
+  while (AtomicOps::AcquireLoad(&pending_invocations_)) {
+    // If the destructor was called while AsyncInvoke was being called by
+    // another thread, WITHIN an AsyncInvoked functor, it may do another
+    // Thread::Post even after we called MessageQueueManager::Clear(this). So
+    // we need to keep calling Clear to discard these posts.
+    MessageQueueManager::Clear(this);
+    invocation_complete_.Wait(Event::kForever);
+  }
 }
 
 void AsyncInvoker::OnMessage(Message* msg) {
   // Get the AsyncClosure shared ptr from this message's data.
-  ScopedRefMessageData<AsyncClosure>* data =
-      static_cast<ScopedRefMessageData<AsyncClosure>*>(msg->pdata);
-  scoped_refptr<AsyncClosure> closure = data->data();
-  delete msg->pdata;
-  msg->pdata = NULL;
-
+  ScopedMessageData<AsyncClosure>* data =
+      static_cast<ScopedMessageData<AsyncClosure>*>(msg->pdata);
   // Execute the closure and trigger the return message if needed.
-  closure->Execute();
+  data->inner_data().Execute();
+  delete data;
 }
 
-void AsyncInvoker::Flush(Thread* thread, uint32 id /*= MQID_ANY*/) {
+void AsyncInvoker::Flush(Thread* thread, uint32_t id /*= MQID_ANY*/) {
   if (destroying_) return;
 
   // Run this on |thread| to reduce the number of context switches.
   if (Thread::Current() != thread) {
-    thread->Invoke<void>(Bind(&AsyncInvoker::Flush, this, thread, id));
+    thread->Invoke<void>(RTC_FROM_HERE,
+                         Bind(&AsyncInvoker::Flush, this, thread, id));
     return;
   }
 
@@ -49,32 +57,35 @@ void AsyncInvoker::Flush(Thread* thread, uint32 id /*= MQID_ANY*/) {
   thread->Clear(this, id, &removed);
   for (MessageList::iterator it = removed.begin(); it != removed.end(); ++it) {
     // This message was pending on this thread, so run it now.
-    thread->Send(it->phandler,
-                 it->message_id,
-                 it->pdata);
+    thread->Send(it->posted_from, it->phandler, it->message_id, it->pdata);
   }
 }
 
-void AsyncInvoker::DoInvoke(Thread* thread,
-                            const scoped_refptr<AsyncClosure>& closure,
-                            uint32 id) {
+void AsyncInvoker::DoInvoke(const Location& posted_from,
+                            Thread* thread,
+                            std::unique_ptr<AsyncClosure> closure,
+                            uint32_t id) {
   if (destroying_) {
     LOG(LS_WARNING) << "Tried to invoke while destroying the invoker.";
     return;
   }
-  thread->Post(this, id, new ScopedRefMessageData<AsyncClosure>(closure));
+  AtomicOps::Increment(&pending_invocations_);
+  thread->Post(posted_from, this, id,
+               new ScopedMessageData<AsyncClosure>(std::move(closure)));
 }
 
-void AsyncInvoker::DoInvokeDelayed(Thread* thread,
-                                   const scoped_refptr<AsyncClosure>& closure,
-                                   uint32 delay_ms,
-                                   uint32 id) {
+void AsyncInvoker::DoInvokeDelayed(const Location& posted_from,
+                                   Thread* thread,
+                                   std::unique_ptr<AsyncClosure> closure,
+                                   uint32_t delay_ms,
+                                   uint32_t id) {
   if (destroying_) {
     LOG(LS_WARNING) << "Tried to invoke while destroying the invoker.";
     return;
   }
-  thread->PostDelayed(delay_ms, this, id,
-                      new ScopedRefMessageData<AsyncClosure>(closure));
+  AtomicOps::Increment(&pending_invocations_);
+  thread->PostDelayed(posted_from, delay_ms, this, id,
+                      new ScopedMessageData<AsyncClosure>(std::move(closure)));
 }
 
 GuardedAsyncInvoker::GuardedAsyncInvoker() : thread_(Thread::Current()) {
@@ -85,7 +96,7 @@ GuardedAsyncInvoker::GuardedAsyncInvoker() : thread_(Thread::Current()) {
 GuardedAsyncInvoker::~GuardedAsyncInvoker() {
 }
 
-bool GuardedAsyncInvoker::Flush(uint32 id) {
+bool GuardedAsyncInvoker::Flush(uint32_t id) {
   rtc::CritScope cs(&crit_);
   if (thread_ == nullptr)
     return false;
@@ -100,33 +111,9 @@ void GuardedAsyncInvoker::ThreadDestroyed() {
   thread_ = nullptr;
 }
 
-NotifyingAsyncClosureBase::NotifyingAsyncClosureBase(AsyncInvoker* invoker,
-                                                     Thread* calling_thread)
-    : invoker_(invoker), calling_thread_(calling_thread) {
-  calling_thread->SignalQueueDestroyed.connect(
-      this, &NotifyingAsyncClosureBase::CancelCallback);
-  invoker->SignalInvokerDestroyed.connect(
-      this, &NotifyingAsyncClosureBase::CancelCallback);
-}
-
-NotifyingAsyncClosureBase::~NotifyingAsyncClosureBase() {
-  disconnect_all();
-}
-
-void NotifyingAsyncClosureBase::TriggerCallback() {
-  CritScope cs(&crit_);
-  if (!CallbackCanceled() && !callback_.empty()) {
-    invoker_->AsyncInvoke<void>(calling_thread_, callback_);
-  }
-}
-
-void NotifyingAsyncClosureBase::CancelCallback() {
-  // If the callback is triggering when this is called, block the
-  // destructor of the dying object here by waiting until the callback
-  // is done triggering.
-  CritScope cs(&crit_);
-  // calling_thread_ == NULL means do not trigger the callback.
-  calling_thread_ = NULL;
+AsyncClosure::~AsyncClosure() {
+  AtomicOps::Decrement(&invoker_->pending_invocations_);
+  invoker_->invocation_complete_.Set();
 }
 
 }  // namespace rtc

@@ -12,48 +12,15 @@
 
 #include <numeric>
 
-#include "testing/gtest/include/gtest/gtest.h"
 #include "webrtc/base/constructormagic.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet_sender.h"
+#include "webrtc/test/gtest.h"
 #include "webrtc/test/testsupport/fileutils.h"
 
 namespace webrtc {
 namespace testing {
 namespace bwe {
-
-TEST(BweTestFramework_RandomTest, Gaussian) {
-  enum {
-    kN = 100000,
-    kBuckets = 100,
-    kMean = 49,
-    kStddev = 10
-  };
-
-  Random random(0x12345678);
-
-  int buckets[kBuckets] = {0};
-  for (int i = 0; i < kN; ++i) {
-    int index = random.Gaussian(kMean, kStddev);
-    if (index >= 0 && index < kBuckets) {
-      buckets[index]++;
-    }
-  }
-
-  const double kPi = 3.14159265358979323846;
-  const double kScale = kN / (kStddev * sqrt(2.0 * kPi));
-  const double kDiv = -2.0 * kStddev * kStddev;
-  double self_corr = 0.0;
-  double bucket_corr = 0.0;
-  for (int n = 0; n < kBuckets; ++n) {
-    double normal_dist = kScale * exp((n - kMean) * (n - kMean) / kDiv);
-    self_corr += normal_dist * normal_dist;
-    bucket_corr += normal_dist * buckets[n];
-  }
-  printf("Correlation: %f (random sample), %f (self), %f (quotient)\n",
-         bucket_corr, self_corr, bucket_corr / self_corr);
-  EXPECT_NEAR(1.0, bucket_corr / self_corr, 0.0004);
-}
 
 static bool IsSequenceNumberSorted(const Packets& packets) {
   PacketsConstIt last_it = packets.begin();
@@ -533,7 +500,7 @@ TEST(BweTestFramework_JitterFilterTest, Jitter1031) {
   TestJitterFilter(1031);
 }
 
-static void TestReorderFilter(uint16_t reorder_percent, uint16_t near_value) {
+static void TestReorderFilter(uint16_t reorder_percent) {
   const uint16_t kPacketCount = 10000;
 
   // Generate packets with 10 ms interval.
@@ -559,16 +526,23 @@ static void TestReorderFilter(uint16_t reorder_percent, uint16_t near_value) {
   for (auto* packet : packets) {
     const MediaPacket* media_packet = static_cast<const MediaPacket*>(packet);
     uint16_t sequence_number = media_packet->header().sequenceNumber;
+    // The expected position for sequence number s is in position s-1.
     if (sequence_number < last_sequence_number) {
       distance += last_sequence_number - sequence_number;
     }
     last_sequence_number = sequence_number;
   }
 
-  // Because reordering is random, we allow a threshold when comparing. The
-  // maximum distance a packet can be moved is PacketCount - 1.
-  EXPECT_NEAR(
-    ((kPacketCount - 1) * reorder_percent) / 100, distance, near_value);
+  // The probability that two elements are swapped is p = reorder_percent / 100.
+  double p = static_cast<double>(reorder_percent) / 100;
+  // The expected number of swaps we perform is p * (PacketCount - 1),
+  // and each swap increases the distance by one.
+  double mean = p * (kPacketCount - 1);
+  // If pair i is chosen to be swapped with probability p, the variance for that
+  // pair is p * (1 - p). Since there are (kPacketCount - 1) independent pairs,
+  // the variance for the number of swaps is (kPacketCount - 1) * p * (1 - p).
+  double std_deviation = sqrt((kPacketCount - 1) * p * (1 - p));
+  EXPECT_NEAR(mean, distance, 3 * std_deviation);
 
   for (auto* packet : packets)
     delete packet;
@@ -576,23 +550,23 @@ static void TestReorderFilter(uint16_t reorder_percent, uint16_t near_value) {
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder0) {
   // For 0% reordering, no packets should have been moved, so result is exact.
-  TestReorderFilter(0, 0);
+  TestReorderFilter(0);
 }
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder10) {
-  TestReorderFilter(10, 30);
+  TestReorderFilter(10);
 }
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder20) {
-  TestReorderFilter(20, 20);
+  TestReorderFilter(20);
 }
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder50) {
-  TestReorderFilter(50, 20);
+  TestReorderFilter(50);
 }
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder70) {
-  TestReorderFilter(70, 20);
+  TestReorderFilter(70);
 }
 
 TEST(BweTestFramework_ReorderFilterTest, Reorder100) {
@@ -600,7 +574,7 @@ TEST(BweTestFramework_ReorderFilterTest, Reorder100) {
   // adjacent packets, when the likelihood of a swap is 1.0, a swap will always
   // occur, so the stream will be in order except for the first packet, which
   // has been moved to the end. Therefore we expect the result to be exact here.
-  TestReorderFilter(100.0, 0);
+  TestReorderFilter(100.0);
 }
 
 class BweTestFramework_ChokeFilterTest : public ::testing::Test {
@@ -995,56 +969,6 @@ TEST(BweTestFramework_VideoSenderTest, FeedbackIneffective) {
   sender.RunFor(0, &packets);
   EXPECT_EQ(820000u, source.bits_per_second());
   TestVideoSender(&sender, 10000, 1000, 500, 1025000);
-}
-
-TEST(BweTestFramework_AdaptiveVideoSenderTest, FeedbackChangesBitrate) {
-  AdaptiveVideoSource source(0, 25.0f, 820, 0x1234, 0);
-  VideoSender sender(NULL, &source, kRembEstimator);
-  EXPECT_EQ(820000u, source.bits_per_second());
-  TestVideoSender(&sender, 9961, 1000, 500, 1025000);
-
-  // Make sure we can reduce the bitrate.
-  RembFeedback* feedback = new RembFeedback(0, 0, 0, 512000, RTCPReportBlock());
-  Packets packets;
-  packets.push_back(feedback);
-  sender.RunFor(0, &packets);
-  EXPECT_EQ(512000u, source.bits_per_second());
-  TestVideoSender(&sender, 10000, 750, 160, 640000);
-
-  // Increase the bitrate to the initial bitrate and verify that the output is
-  // the same.
-  feedback = new RembFeedback(0, 0, 0, 820000, RTCPReportBlock());
-  packets.push_back(feedback);
-  sender.RunFor(10000, &packets);
-  EXPECT_EQ(820000u, source.bits_per_second());
-
-  for (auto* packet : packets)
-    delete packet;
-}
-
-TEST(BweTestFramework_AdaptiveVideoSenderTest, Paced_FeedbackChangesBitrate) {
-  AdaptiveVideoSource source(0, 25.0f, 820, 0x1234, 0);
-  PacedVideoSender sender(NULL, &source, kRembEstimator);
-  EXPECT_EQ(820000u, source.bits_per_second());
-  TestVideoSender(&sender, 9998, 1000, 500, 1025000);
-
-  // Make sure we can reduce the bitrate.
-  RembFeedback* feedback = new RembFeedback(0, 1, 0, 512000, RTCPReportBlock());
-  Packets packets;
-  packets.push_back(feedback);
-  sender.RunFor(10000, &packets);
-  ASSERT_EQ(512000u, source.bits_per_second());
-  TestVideoSender(&sender, 10000, 750, 160, 640000);
-
-  // Increase the bitrate to the initial bitrate and verify that the output is
-  // the same.
-  feedback = new RembFeedback(0, 0, 0, 820000, RTCPReportBlock());
-  packets.push_back(feedback);
-  sender.RunFor(10000, &packets);
-  EXPECT_EQ(820000u, source.bits_per_second());
-
-  for (auto* packet : packets)
-    delete packet;
 }
 }  // namespace bwe
 }  // namespace testing

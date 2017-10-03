@@ -7,36 +7,47 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
-#ifndef WEBRTC_VIDEO_ENGINE_TEST_COMMON_VIDEO_CAPTURER_H_
-#define WEBRTC_VIDEO_ENGINE_TEST_COMMON_VIDEO_CAPTURER_H_
+#ifndef WEBRTC_TEST_VIDEO_CAPTURER_H_
+#define WEBRTC_TEST_VIDEO_CAPTURER_H_
 
 #include <stddef.h>
 
+#include <memory>
+
+#include "webrtc/api/video/i420_buffer.h"
+#include "webrtc/api/video/video_frame.h"
+#include "webrtc/base/criticalsection.h"
+#include "webrtc/base/optional.h"
+#include "webrtc/media/base/videoadapter.h"
+#include "webrtc/media/base/videosourceinterface.h"
+
+namespace cricket {
+class VideoAdapter;
+}  // namespace cricket
+
 namespace webrtc {
-
 class Clock;
-
-class VideoCaptureInput;
-
 namespace test {
 
-class VideoCapturer {
+class VideoCapturer : public rtc::VideoSourceInterface<VideoFrame> {
  public:
-  static VideoCapturer* Create(VideoCaptureInput* input,
-                               size_t width,
-                               size_t height,
-                               int fps,
-                               Clock* clock);
-  virtual ~VideoCapturer() {}
+  VideoCapturer();
+  virtual ~VideoCapturer();
 
   virtual void Start() = 0;
   virtual void Stop() = 0;
 
- protected:
-  explicit VideoCapturer(VideoCaptureInput* input);
-  VideoCaptureInput* input_;
-};
-}  // test
-}  // webrtc
+  void AddOrUpdateSink(rtc::VideoSinkInterface<VideoFrame>* sink,
+                       const rtc::VideoSinkWants& wants) override;
 
-#endif  // WEBRTC_VIDEO_ENGINE_TEST_COMMON_VIDEO_CAPTURER_H_
+ protected:
+  rtc::Optional<VideoFrame> AdaptFrame(const VideoFrame& frame);
+  rtc::VideoSinkWants GetSinkWants();
+
+ private:
+  const std::unique_ptr<cricket::VideoAdapter> video_adapter_;
+};
+}  // namespace test
+}  // namespace webrtc
+
+#endif  // WEBRTC_TEST_VIDEO_CAPTURER_H_

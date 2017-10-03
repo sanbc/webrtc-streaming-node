@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/system_wrappers/interface/clock.h"
+#include "webrtc/system_wrappers/include/clock.h"
 
 #if defined(_WIN32)
 // Windows needs to be included before mmsystem.h
@@ -20,39 +20,33 @@
 #endif
 
 #include "webrtc/base/criticalsection.h"
-#include "webrtc/system_wrappers/interface/rw_lock_wrapper.h"
-#include "webrtc/system_wrappers/interface/tick_util.h"
+#include "webrtc/base/timeutils.h"
+#include "webrtc/system_wrappers/include/rw_lock_wrapper.h"
 
 namespace webrtc {
-
-const double kNtpFracPerMs = 4.294967296E6;
-
-int64_t Clock::NtpToMs(uint32_t ntp_secs, uint32_t ntp_frac) {
-  const double ntp_frac_ms = static_cast<double>(ntp_frac) / kNtpFracPerMs;
-  return 1000 * static_cast<int64_t>(ntp_secs) +
-      static_cast<int64_t>(ntp_frac_ms + 0.5);
-}
 
 class RealTimeClock : public Clock {
   // Return a timestamp in milliseconds relative to some arbitrary source; the
   // source is fixed for this clock.
   int64_t TimeInMilliseconds() const override {
-    return TickTime::MillisecondTimestamp();
+    return rtc::TimeMillis();
   }
 
   // Return a timestamp in microseconds relative to some arbitrary source; the
   // source is fixed for this clock.
   int64_t TimeInMicroseconds() const override {
-    return TickTime::MicrosecondTimestamp();
+    return rtc::TimeMicros();
   }
 
-  // Retrieve an NTP absolute timestamp in seconds and fractions of a second.
-  void CurrentNtp(uint32_t& seconds, uint32_t& fractions) const override {
+  // Retrieve an NTP absolute timestamp.
+  NtpTime CurrentNtpTime() const override {
     timeval tv = CurrentTimeVal();
     double microseconds_in_seconds;
+    uint32_t seconds;
     Adjust(tv, &seconds, &microseconds_in_seconds);
-    fractions = static_cast<uint32_t>(
+    uint32_t fractions = static_cast<uint32_t>(
         microseconds_in_seconds * kMagicNtpFractionalUnit + 0.5);
+    return NtpTime(seconds, fractions);
   }
 
   // Retrieve an NTP absolute timestamp in milliseconds.
@@ -179,7 +173,7 @@ class WindowsRealTimeClock : public RealTimeClock {
   }
 
   // mutable as time-accessing functions are const.
-  mutable rtc::CriticalSection crit_;
+  rtc::CriticalSection crit_;
   mutable DWORD last_time_ms_;
   mutable LONG num_timer_wraps_;
   const ReferencePoint ref_point_;
@@ -248,11 +242,12 @@ int64_t SimulatedClock::TimeInMicroseconds() const {
   return time_us_;
 }
 
-void SimulatedClock::CurrentNtp(uint32_t& seconds, uint32_t& fractions) const {
+NtpTime SimulatedClock::CurrentNtpTime() const {
   int64_t now_ms = TimeInMilliseconds();
-  seconds = (now_ms / 1000) + kNtpJan1970;
-  fractions =
+  uint32_t seconds = (now_ms / 1000) + kNtpJan1970;
+  uint32_t fractions =
       static_cast<uint32_t>((now_ms % 1000) * kMagicNtpFractionalUnit / 1000);
+  return NtpTime(seconds, fractions);
 }
 
 int64_t SimulatedClock::CurrentNtpInMilliseconds() const {

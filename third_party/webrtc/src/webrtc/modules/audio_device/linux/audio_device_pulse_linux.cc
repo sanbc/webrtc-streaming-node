@@ -11,27 +11,26 @@
 #include <assert.h>
 
 #include "webrtc/base/checks.h"
-
+#include "webrtc/base/logging.h"
 #include "webrtc/modules/audio_device/audio_device_config.h"
 #include "webrtc/modules/audio_device/linux/audio_device_pulse_linux.h"
+#include "webrtc/system_wrappers/include/event_wrapper.h"
+#include "webrtc/system_wrappers/include/trace.h"
 
-#include "webrtc/system_wrappers/interface/event_wrapper.h"
-#include "webrtc/system_wrappers/interface/trace.h"
-
-webrtc_adm_linux_pulse::PulseAudioSymbolTable PaSymbolTable;
+webrtc::adm_linux_pulse::PulseAudioSymbolTable PaSymbolTable;
 
 // Accesses Pulse functions through our late-binding symbol table instead of
 // directly. This way we don't have to link to libpulse, which means our binary
 // will work on systems that don't have it.
-#define LATE(sym) \
-  LATESYM_GET(webrtc_adm_linux_pulse::PulseAudioSymbolTable, &PaSymbolTable, sym)
+#define LATE(sym)                                                             \
+  LATESYM_GET(webrtc::adm_linux_pulse::PulseAudioSymbolTable, &PaSymbolTable, \
+              sym)
 
 namespace webrtc
 {
 
 AudioDeviceLinuxPulse::AudioDeviceLinuxPulse(const int32_t id) :
     _ptrAudioBuffer(NULL),
-    _critSect(*CriticalSectionWrapper::CreateCriticalSection()),
     _timeEventRec(*EventWrapper::Create()),
     _timeEventPlay(*EventWrapper::Create()),
     _recStartEvent(*EventWrapper::Create()),
@@ -134,7 +133,6 @@ AudioDeviceLinuxPulse::~AudioDeviceLinuxPulse()
     delete &_playStartEvent;
     delete &_timeEventRec;
     delete &_timeEventPlay;
-    delete &_critSect;
 }
 
 void AudioDeviceLinuxPulse::AttachAudioBuffer(AudioDeviceBuffer* audioBuffer)
@@ -163,74 +161,49 @@ int32_t AudioDeviceLinuxPulse::ActiveAudioLayer(
     return 0;
 }
 
-int32_t AudioDeviceLinuxPulse::Init()
-{
-    RTC_DCHECK(thread_checker_.CalledOnValidThread());
-    if (_initialized)
-    {
-        return 0;
+AudioDeviceGeneric::InitStatus AudioDeviceLinuxPulse::Init() {
+  RTC_DCHECK(thread_checker_.CalledOnValidThread());
+  if (_initialized) {
+    return InitStatus::OK;
+  }
+
+  // Initialize PulseAudio
+  if (InitPulseAudio() < 0) {
+    LOG(LS_ERROR) << "failed to initialize PulseAudio";
+    if (TerminatePulseAudio() < 0) {
+      LOG(LS_ERROR) << "failed to terminate PulseAudio";
     }
+    return InitStatus::OTHER_ERROR;
+  }
 
-    // Initialize PulseAudio
-    if (InitPulseAudio() < 0)
-    {
-        WEBRTC_TRACE(kTraceError, kTraceAudioDevice, _id,
-                     "  failed to initialize PulseAudio");
+  _playWarning = 0;
+  _playError = 0;
+  _recWarning = 0;
+  _recError = 0;
 
-        if (TerminatePulseAudio() < 0)
-        {
-            WEBRTC_TRACE(kTraceError, kTraceAudioDevice, _id,
-                         "  failed to terminate PulseAudio");
-        }
+  // Get X display handle for typing detection
+  _XDisplay = XOpenDisplay(NULL);
+  if (!_XDisplay) {
+    LOG(LS_WARNING)
+        << "failed to open X display, typing detection will not work";
+  }
 
-        return -1;
-    }
+  // RECORDING
+  _ptrThreadRec.reset(new rtc::PlatformThread(
+      RecThreadFunc, this, "webrtc_audio_module_rec_thread"));
 
-    _playWarning = 0;
-    _playError = 0;
-    _recWarning = 0;
-    _recError = 0;
+  _ptrThreadRec->Start();
+  _ptrThreadRec->SetPriority(rtc::kRealtimePriority);
 
-    //Get X display handle for typing detection
-    _XDisplay = XOpenDisplay(NULL);
-    if (!_XDisplay)
-    {
-        WEBRTC_TRACE(kTraceWarning, kTraceAudioDevice, _id,
-          "  failed to open X display, typing detection will not work");
-    }
+  // PLAYOUT
+  _ptrThreadPlay.reset(new rtc::PlatformThread(
+      PlayThreadFunc, this, "webrtc_audio_module_play_thread"));
+  _ptrThreadPlay->Start();
+  _ptrThreadPlay->SetPriority(rtc::kRealtimePriority);
 
-    // RECORDING
-    const char* threadName = "webrtc_audio_module_rec_thread";
-    _ptrThreadRec = ThreadWrapper::CreateThread(RecThreadFunc, this,
-                                                threadName);
-    if (!_ptrThreadRec->Start())
-    {
-        WEBRTC_TRACE(kTraceCritical, kTraceAudioDevice, _id,
-                     "  failed to start the rec audio thread");
+  _initialized = true;
 
-        _ptrThreadRec.reset();
-        return -1;
-    }
-
-    _ptrThreadRec->SetPriority(kRealtimePriority);
-
-    // PLAYOUT
-    threadName = "webrtc_audio_module_play_thread";
-    _ptrThreadPlay = ThreadWrapper::CreateThread(PlayThreadFunc, this,
-                                                 threadName);
-    if (!_ptrThreadPlay->Start())
-    {
-        WEBRTC_TRACE(kTraceCritical, kTraceAudioDevice, _id,
-                     "  failed to start the play audio thread");
-
-        _ptrThreadPlay.reset();
-        return -1;
-    }
-    _ptrThreadPlay->SetPriority(kRealtimePriority);
-
-    _initialized = true;
-
-    return 0;
+  return InitStatus::OK;
 }
 
 int32_t AudioDeviceLinuxPulse::Terminate()
@@ -246,7 +219,7 @@ int32_t AudioDeviceLinuxPulse::Terminate()
     // RECORDING
     if (_ptrThreadRec)
     {
-        ThreadWrapper* tmpThread = _ptrThreadRec.release();
+        rtc::PlatformThread* tmpThread = _ptrThreadRec.release();
 
         _timeEventRec.Set();
         tmpThread->Stop();
@@ -256,7 +229,7 @@ int32_t AudioDeviceLinuxPulse::Terminate()
     // PLAYOUT
     if (_ptrThreadPlay)
     {
-        ThreadWrapper* tmpThread = _ptrThreadPlay.release();
+        rtc::PlatformThread* tmpThread = _ptrThreadPlay.release();
 
         _timeEventPlay.Set();
         tmpThread->Stop();
@@ -777,7 +750,7 @@ int32_t AudioDeviceLinuxPulse::StereoPlayout(bool& enabled) const
 
 int32_t AudioDeviceLinuxPulse::SetAGC(bool enable)
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _AGC = enable;
 
     return 0;
@@ -785,7 +758,7 @@ int32_t AudioDeviceLinuxPulse::SetAGC(bool enable)
 
 bool AudioDeviceLinuxPulse::AGC() const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     return _AGC;
 }
 
@@ -1372,7 +1345,7 @@ int32_t AudioDeviceLinuxPulse::StartRecording()
     if (kEventTimeout == _recStartEvent.Wait(10000))
     {
         {
-            CriticalSectionScoped lock(&_critSect);
+            rtc::CritScope lock(&_critSect);
             _startRec = false;
         }
         StopRecording();
@@ -1382,7 +1355,7 @@ int32_t AudioDeviceLinuxPulse::StartRecording()
     }
 
     {
-        CriticalSectionScoped lock(&_critSect);
+        rtc::CritScope lock(&_critSect);
         if (_recording)
         {
             // The recording state is set by the audio thread after recording
@@ -1401,7 +1374,7 @@ int32_t AudioDeviceLinuxPulse::StartRecording()
 int32_t AudioDeviceLinuxPulse::StopRecording()
 {
     RTC_DCHECK(thread_checker_.CalledOnValidThread());
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (!_recIsInitialized)
     {
@@ -1495,7 +1468,7 @@ int32_t AudioDeviceLinuxPulse::StartPlayout()
 
     // Set state to ensure that playout starts from the audio thread.
     {
-        CriticalSectionScoped lock(&_critSect);
+        rtc::CritScope lock(&_critSect);
         _startPlay = true;
     }
 
@@ -1507,7 +1480,7 @@ int32_t AudioDeviceLinuxPulse::StartPlayout()
     if (kEventTimeout == _playStartEvent.Wait(10000))
     {
         {
-            CriticalSectionScoped lock(&_critSect);
+            rtc::CritScope lock(&_critSect);
             _startPlay = false;
         }
         StopPlayout();
@@ -1517,7 +1490,7 @@ int32_t AudioDeviceLinuxPulse::StartPlayout()
     }
 
     {
-        CriticalSectionScoped lock(&_critSect);
+        rtc::CritScope lock(&_critSect);
         if (_playing)
         {
             // The playing state is set by the audio thread after playout
@@ -1536,7 +1509,7 @@ int32_t AudioDeviceLinuxPulse::StartPlayout()
 int32_t AudioDeviceLinuxPulse::StopPlayout()
 {
     RTC_DCHECK(thread_checker_.CalledOnValidThread());
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (!_playIsInitialized)
     {
@@ -1600,7 +1573,7 @@ int32_t AudioDeviceLinuxPulse::StopPlayout()
 
 int32_t AudioDeviceLinuxPulse::PlayoutDelay(uint16_t& delayMS) const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     delayMS = (uint16_t) _sndCardPlayDelay;
     return 0;
 }
@@ -1657,49 +1630,49 @@ int32_t AudioDeviceLinuxPulse::CPULoad(uint16_t& /*load*/) const
 
 bool AudioDeviceLinuxPulse::PlayoutWarning() const
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   return (_playWarning > 0);
 }
 
 bool AudioDeviceLinuxPulse::PlayoutError() const
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   return (_playError > 0);
 }
 
 bool AudioDeviceLinuxPulse::RecordingWarning() const
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   return (_recWarning > 0);
 }
 
 bool AudioDeviceLinuxPulse::RecordingError() const
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   return (_recError > 0);
 }
 
 void AudioDeviceLinuxPulse::ClearPlayoutWarning()
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   _playWarning = 0;
 }
 
 void AudioDeviceLinuxPulse::ClearPlayoutError()
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   _playError = 0;
 }
 
 void AudioDeviceLinuxPulse::ClearRecordingWarning()
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   _recWarning = 0;
 }
 
 void AudioDeviceLinuxPulse::ClearRecordingError()
 {
-  CriticalSectionScoped lock(&_critSect);
+  rtc::CritScope lock(&_critSect);
   _recError = 0;
 }
 
@@ -2628,7 +2601,7 @@ bool AudioDeviceLinuxPulse::PlayThreadProcess()
             return true;
     }
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (_startPlay)
     {
@@ -2869,7 +2842,7 @@ bool AudioDeviceLinuxPulse::RecThreadProcess()
             return true;
     }
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (_startRec)
     {

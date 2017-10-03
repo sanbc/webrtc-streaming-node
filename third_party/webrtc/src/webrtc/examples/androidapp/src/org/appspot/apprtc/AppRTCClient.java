@@ -20,19 +20,23 @@ import java.util.List;
  * AppRTCClient is the interface representing an AppRTC client.
  */
 public interface AppRTCClient {
-
   /**
    * Struct holding the connection parameters of an AppRTC room.
    */
-  public static class RoomConnectionParameters {
+  class RoomConnectionParameters {
     public final String roomUrl;
     public final String roomId;
     public final boolean loopback;
+    public final String urlParameters;
     public RoomConnectionParameters(
-        String roomUrl, String roomId, boolean loopback) {
+        String roomUrl, String roomId, boolean loopback, String urlParameters) {
       this.roomUrl = roomUrl;
       this.roomId = roomId;
       this.loopback = loopback;
+      this.urlParameters = urlParameters;
+    }
+    public RoomConnectionParameters(String roomUrl, String roomId, boolean loopback) {
+      this(roomUrl, roomId, loopback, null /* urlParameters */);
     }
   }
 
@@ -41,32 +45,37 @@ public interface AppRTCClient {
    * parameters. Once connection is established onConnectedToRoom()
    * callback with room parameters is invoked.
    */
-  public void connectToRoom(RoomConnectionParameters connectionParameters);
+  void connectToRoom(RoomConnectionParameters connectionParameters);
 
   /**
    * Send offer SDP to the other participant.
    */
-  public void sendOfferSdp(final SessionDescription sdp);
+  void sendOfferSdp(final SessionDescription sdp);
 
   /**
    * Send answer SDP to the other participant.
    */
-  public void sendAnswerSdp(final SessionDescription sdp);
+  void sendAnswerSdp(final SessionDescription sdp);
 
   /**
    * Send Ice candidate to the other participant.
    */
-  public void sendLocalIceCandidate(final IceCandidate candidate);
+  void sendLocalIceCandidate(final IceCandidate candidate);
+
+  /**
+   * Send removed ICE candidates to the other participant.
+   */
+  void sendLocalIceCandidateRemovals(final IceCandidate[] candidates);
 
   /**
    * Disconnect from room.
    */
-  public void disconnectFromRoom();
+  void disconnectFromRoom();
 
   /**
    * Struct holding the signaling parameters of an AppRTC room.
    */
-  public static class SignalingParameters {
+  class SignalingParameters {
     public final List<PeerConnection.IceServer> iceServers;
     public final boolean initiator;
     public final String clientId;
@@ -75,11 +84,9 @@ public interface AppRTCClient {
     public final SessionDescription offerSdp;
     public final List<IceCandidate> iceCandidates;
 
-    public SignalingParameters(
-        List<PeerConnection.IceServer> iceServers,
-        boolean initiator, String clientId,
-        String wssUrl, String wssPostUrl,
-        SessionDescription offerSdp, List<IceCandidate> iceCandidates) {
+    public SignalingParameters(List<PeerConnection.IceServer> iceServers, boolean initiator,
+        String clientId, String wssUrl, String wssPostUrl, SessionDescription offerSdp,
+        List<IceCandidate> iceCandidates) {
       this.iceServers = iceServers;
       this.initiator = initiator;
       this.clientId = clientId;
@@ -95,31 +102,36 @@ public interface AppRTCClient {
    *
    * <p>Methods are guaranteed to be invoked on the UI thread of |activity|.
    */
-  public static interface SignalingEvents {
+  interface SignalingEvents {
     /**
      * Callback fired once the room's signaling parameters
      * SignalingParameters are extracted.
      */
-    public void onConnectedToRoom(final SignalingParameters params);
+    void onConnectedToRoom(final SignalingParameters params);
 
     /**
      * Callback fired once remote SDP is received.
      */
-    public void onRemoteDescription(final SessionDescription sdp);
+    void onRemoteDescription(final SessionDescription sdp);
 
     /**
      * Callback fired once remote Ice candidate is received.
      */
-    public void onRemoteIceCandidate(final IceCandidate candidate);
+    void onRemoteIceCandidate(final IceCandidate candidate);
+
+    /**
+     * Callback fired once remote Ice candidate removals are received.
+     */
+    void onRemoteIceCandidatesRemoved(final IceCandidate[] candidates);
 
     /**
      * Callback fired once channel is closed.
      */
-    public void onChannelClose();
+    void onChannelClose();
 
     /**
      * Callback fired once channel error happened.
      */
-    public void onChannelError(final String description);
+    void onChannelError(final String description);
   }
 }

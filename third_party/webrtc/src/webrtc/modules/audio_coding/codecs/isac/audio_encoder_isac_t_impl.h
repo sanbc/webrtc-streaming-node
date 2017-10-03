@@ -11,16 +11,21 @@
 #ifndef WEBRTC_MODULES_AUDIO_CODING_CODECS_ISAC_AUDIO_ENCODER_ISAC_T_IMPL_H_
 #define WEBRTC_MODULES_AUDIO_CODING_CODECS_ISAC_AUDIO_ENCODER_ISAC_T_IMPL_H_
 
-#include "webrtc/modules/audio_coding/codecs/isac/main/interface/audio_encoder_isac.h"
-
 #include "webrtc/base/checks.h"
+#include "webrtc/base/string_to_number.h"
+#include "webrtc/common_types.h"
 
 namespace webrtc {
+namespace {  // NOLINT (not a "regular" header file)
+int GetIsacMaxBitrate(int clockrate_hz) {
+  return (clockrate_hz == 32000) ? 56000 : 32000;
+}
+}  // namespace
 
 template <typename T>
 typename AudioEncoderIsacT<T>::Config CreateIsacConfig(
     const CodecInst& codec_inst,
-    LockedIsacBandwidthInfo* bwinfo) {
+    const rtc::scoped_refptr<LockedIsacBandwidthInfo>& bwinfo) {
   typename AudioEncoderIsacT<T>::Config config;
   config.bwinfo = bwinfo;
   config.payload_type = codec_inst.pltype;
@@ -30,6 +35,33 @@ typename AudioEncoderIsacT<T>::Config CreateIsacConfig(
   config.adaptive_mode = (codec_inst.rate == -1);
   if (codec_inst.rate != -1)
     config.bit_rate = codec_inst.rate;
+  return config;
+}
+
+template <typename T>
+typename AudioEncoderIsacT<T>::Config CreateIsacConfig(
+    int payload_type,
+    const SdpAudioFormat& format) {
+  typename AudioEncoderIsacT<T>::Config config;
+  config.payload_type = payload_type;
+  config.sample_rate_hz = format.clockrate_hz;
+
+  // We only support different frame sizes at 16000 Hz.
+  if (config.sample_rate_hz == 16000) {
+    auto ptime_iter = format.parameters.find("ptime");
+    if (ptime_iter != format.parameters.end()) {
+      auto ptime = rtc::StringToNumber<int>(ptime_iter->second);
+      if (ptime && *ptime >= 60) {
+        config.frame_size_ms = 60;
+      } else {
+        config.frame_size_ms = 30;
+      }
+    }
+  }
+
+  // Set the default bitrate for ISAC to the maximum bitrate allowed at this
+  // clockrate. At this point, adaptive mode is not used by WebRTC.
+  config.bit_rate = GetIsacMaxBitrate(format.clockrate_hz);
   return config;
 }
 
@@ -50,7 +82,6 @@ bool AudioEncoderIsacT<T>::Config::IsOk() const {
       return (frame_size_ms == 30 || frame_size_ms == 60) &&
              (bit_rate == 0 || (bit_rate >= 10000 && bit_rate <= 32000));
     case 32000:
-    case 48000:
       if (max_bit_rate > 160000)
         return false;
       if (max_payload_size_bytes > 600)
@@ -69,18 +100,33 @@ AudioEncoderIsacT<T>::AudioEncoderIsacT(const Config& config) {
 }
 
 template <typename T>
-AudioEncoderIsacT<T>::AudioEncoderIsacT(const CodecInst& codec_inst,
-                                        LockedIsacBandwidthInfo* bwinfo)
+AudioEncoderIsacT<T>::AudioEncoderIsacT(
+    const CodecInst& codec_inst,
+    const rtc::scoped_refptr<LockedIsacBandwidthInfo>& bwinfo)
     : AudioEncoderIsacT(CreateIsacConfig<T>(codec_inst, bwinfo)) {}
+
+template <typename T>
+AudioEncoderIsacT<T>::AudioEncoderIsacT(int payload_type,
+                                        const SdpAudioFormat& format)
+    : AudioEncoderIsacT(CreateIsacConfig<T>(payload_type, format)) {}
+
+template <typename T>
+rtc::Optional<AudioCodecInfo> AudioEncoderIsacT<T>::QueryAudioEncoder(
+    const SdpAudioFormat& format) {
+  if (STR_CASE_CMP(format.name.c_str(), GetPayloadName()) == 0) {
+    Config config = CreateIsacConfig<T>(0, format);
+    if (config.IsOk()) {
+      return rtc::Optional<AudioCodecInfo>(
+          {config.sample_rate_hz, 1, config.bit_rate, 10000,
+           GetIsacMaxBitrate(format.clockrate_hz)});
+    }
+  }
+  return rtc::Optional<AudioCodecInfo>();
+}
 
 template <typename T>
 AudioEncoderIsacT<T>::~AudioEncoderIsacT() {
   RTC_CHECK_EQ(0, T::Free(isac_state_));
-}
-
-template <typename T>
-size_t AudioEncoderIsacT<T>::MaxEncodedBytes() const {
-  return kSufficientEncodeBufferSizeBytes;
 }
 
 template <typename T>
@@ -89,7 +135,7 @@ int AudioEncoderIsacT<T>::SampleRateHz() const {
 }
 
 template <typename T>
-int AudioEncoderIsacT<T>::NumChannels() const {
+size_t AudioEncoderIsacT<T>::NumChannels() const {
   return 1;
 }
 
@@ -114,11 +160,10 @@ int AudioEncoderIsacT<T>::GetTargetBitrate() const {
 }
 
 template <typename T>
-AudioEncoder::EncodedInfo AudioEncoderIsacT<T>::EncodeInternal(
+AudioEncoder::EncodedInfo AudioEncoderIsacT<T>::EncodeImpl(
     uint32_t rtp_timestamp,
-    const int16_t* audio,
-    size_t max_encoded_bytes,
-    uint8_t* encoded) {
+    rtc::ArrayView<const int16_t> audio,
+    rtc::Buffer* encoded) {
   if (!packet_in_progress_) {
     // Starting a new packet; remember the timestamp for later.
     packet_in_progress_ = true;
@@ -128,24 +173,29 @@ AudioEncoder::EncodedInfo AudioEncoderIsacT<T>::EncodeInternal(
     IsacBandwidthInfo bwinfo = bwinfo_->Get();
     T::SetBandwidthInfo(isac_state_, &bwinfo);
   }
-  int r = T::Encode(isac_state_, audio, encoded);
-  RTC_CHECK_GE(r, 0) << "Encode failed (error code "
-                     << T::GetErrorCode(isac_state_) << ")";
 
-  // T::Encode doesn't allow us to tell it the size of the output
-  // buffer. All we can do is check for an overrun after the fact.
-  RTC_CHECK_LE(static_cast<size_t>(r), max_encoded_bytes);
+  size_t encoded_bytes = encoded->AppendData(
+      kSufficientEncodeBufferSizeBytes,
+      [&] (rtc::ArrayView<uint8_t> encoded) {
+        int r = T::Encode(isac_state_, audio.data(), encoded.data());
 
-  if (r == 0)
+        RTC_CHECK_GE(r, 0) << "Encode failed (error code "
+                           << T::GetErrorCode(isac_state_) << ")";
+
+        return static_cast<size_t>(r);
+      });
+
+  if (encoded_bytes == 0)
     return EncodedInfo();
 
   // Got enough input to produce a packet. Return the saved timestamp from
   // the first chunk of input that went into the packet.
   packet_in_progress_ = false;
   EncodedInfo info;
-  info.encoded_bytes = r;
+  info.encoded_bytes = encoded_bytes;
   info.encoded_timestamp = packet_timestamp_;
   info.payload_type = config_.payload_type;
+  info.encoder_type = CodecType::kIsac;
   return info;
 }
 
@@ -177,15 +227,11 @@ void AudioEncoderIsacT<T>::RecreateEncoderInstance(const Config& config) {
   if (config.max_bit_rate != -1)
     RTC_CHECK_EQ(0, T::SetMaxRate(isac_state_, config.max_bit_rate));
 
-  // When config.sample_rate_hz is set to 48000 Hz (iSAC-fb), the decoder is
-  // still set to 32000 Hz, since there is no full-band mode in the decoder.
-  const int decoder_sample_rate_hz = std::min(config.sample_rate_hz, 32000);
-
   // Set the decoder sample rate even though we just use the encoder. This
   // doesn't appear to be necessary to produce a valid encoding, but without it
   // we get an encoding that isn't bit-for-bit identical with what a combined
   // encoder+decoder object produces.
-  RTC_CHECK_EQ(0, T::SetDecSampRate(isac_state_, decoder_sample_rate_hz));
+  RTC_CHECK_EQ(0, T::SetDecSampRate(isac_state_, config.sample_rate_hz));
 
   config_ = config;
 }

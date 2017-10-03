@@ -17,7 +17,9 @@ int32_t AudioDeviceDummy::ActiveAudioLayer(
   return -1;
 }
 
-int32_t AudioDeviceDummy::Init() { return 0; }
+AudioDeviceGeneric::InitStatus AudioDeviceDummy::Init() {
+  return InitStatus::OK;
+}
 
 int32_t AudioDeviceDummy::Terminate() { return 0; }
 
@@ -67,13 +69,13 @@ bool AudioDeviceDummy::RecordingIsInitialized() const { return false; }
 
 int32_t AudioDeviceDummy::StartPlayout() { return -1; }
 
-int32_t AudioDeviceDummy::StopPlayout() { return -1; }
+int32_t AudioDeviceDummy::StopPlayout() { return 0; }
 
 bool AudioDeviceDummy::Playing() const { return false; }
 
 int32_t AudioDeviceDummy::StartRecording() { return -1; }
 
-int32_t AudioDeviceDummy::StopRecording() { return -1; }
+int32_t AudioDeviceDummy::StopRecording() { return 0; }
 
 bool AudioDeviceDummy::Recording() const { return false; }
 

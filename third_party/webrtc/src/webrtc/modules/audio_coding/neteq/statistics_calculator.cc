@@ -18,9 +18,19 @@
 #include "webrtc/base/safe_conversions.h"
 #include "webrtc/modules/audio_coding/neteq/decision_logic.h"
 #include "webrtc/modules/audio_coding/neteq/delay_manager.h"
-#include "webrtc/system_wrappers/interface/metrics.h"
+#include "webrtc/system_wrappers/include/metrics.h"
 
 namespace webrtc {
+
+namespace {
+size_t AddIntToSizeTWithLowerCap(int a, size_t b) {
+  const size_t ret = b + a;
+  // If a + b is negative, resulting in a negative wrap, cap it to zero instead.
+  static_assert(sizeof(size_t) >= sizeof(int),
+                "int must not be wider than size_t for this to work");
+  return (a < 0 && ret > b) ? 0 : ret;
+}
+}  // namespace
 
 // Allocating the static const so that it can be passed by reference to
 // RTC_DCHECK.
@@ -50,7 +60,7 @@ void StatisticsCalculator::PeriodicUmaLogger::AdvanceClock(int step_ms) {
 }
 
 void StatisticsCalculator::PeriodicUmaLogger::LogToUma(int value) const {
-  RTC_HISTOGRAM_COUNTS(uma_name_, value, 1, max_value_, 50);
+  RTC_HISTOGRAM_COUNTS_SPARSE(uma_name_, value, 1, max_value_, 50);
 }
 
 StatisticsCalculator::PeriodicUmaCount::PeriodicUmaCount(
@@ -95,7 +105,7 @@ void StatisticsCalculator::PeriodicUmaAverage::RegisterSample(int value) {
 }
 
 int StatisticsCalculator::PeriodicUmaAverage::Metric() const {
-  return static_cast<int>(sum_ / counter_);
+  return counter_ == 0 ? 0 : static_cast<int>(sum_ / counter_);
 }
 
 void StatisticsCalculator::PeriodicUmaAverage::Reset() {
@@ -146,6 +156,16 @@ void StatisticsCalculator::ExpandedVoiceSamples(size_t num_samples) {
 
 void StatisticsCalculator::ExpandedNoiseSamples(size_t num_samples) {
   expanded_noise_samples_ += num_samples;
+}
+
+void StatisticsCalculator::ExpandedVoiceSamplesCorrection(int num_samples) {
+  expanded_speech_samples_ =
+      AddIntToSizeTWithLowerCap(num_samples, expanded_speech_samples_);
+}
+
+void StatisticsCalculator::ExpandedNoiseSamplesCorrection(int num_samples) {
+  expanded_noise_samples_ =
+      AddIntToSizeTWithLowerCap(num_samples, expanded_noise_samples_);
 }
 
 void StatisticsCalculator::PreemptiveExpandedSamples(size_t num_samples) {
@@ -218,12 +238,13 @@ void StatisticsCalculator::GetNetworkStatistics(
   stats->added_zero_samples = added_zero_samples_;
   stats->current_buffer_size_ms =
       static_cast<uint16_t>(num_samples_in_buffers * 1000 / fs_hz);
-  const int ms_per_packet = rtc::checked_cast<int>(
+  const int ms_per_packet = rtc::dchecked_cast<int>(
       decision_logic.packet_length_samples() / (fs_hz / 1000));
   stats->preferred_buffer_size_ms = (delay_manager.TargetLevel() >> 8) *
       ms_per_packet;
   stats->jitter_peaks_found = delay_manager.PeakFound();
-  stats->clockdrift_ppm = delay_manager.AverageIAT();
+  stats->clockdrift_ppm =
+      rtc::saturated_cast<int32_t>(delay_manager.EstimatedClockDriftPpm());
 
   stats->packet_loss_rate =
       CalculateQ14Ratio(lost_timestamps_, timestamps_since_last_report_);

@@ -11,6 +11,7 @@
 #ifndef WEBRTC_BASE_FILEROTATINGSTREAM_H_
 #define WEBRTC_BASE_FILEROTATINGSTREAM_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -67,7 +68,7 @@ class FileRotatingStream : public StreamInterface {
   std::string GetFilePath(size_t index) const;
 
   // Returns the number of files that will used by this stream.
-  size_t GetNumFiles() { return file_names_.size(); }
+  size_t GetNumFiles() const { return file_names_.size(); }
 
  protected:
   size_t GetMaxFileSize() const { return max_file_size_; }
@@ -110,7 +111,7 @@ class FileRotatingStream : public StreamInterface {
   const Mode mode_;
 
   // FileStream is used to write to the current file.
-  scoped_ptr<FileStream> file_stream_;
+  std::unique_ptr<FileStream> file_stream_;
   // Convenience storage for file names so we don't generate them over and over.
   std::vector<std::string> file_names_;
   size_t max_file_size_;

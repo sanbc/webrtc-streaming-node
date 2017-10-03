@@ -15,6 +15,8 @@
 #include "webrtc/base/arraysize.h"
 #include "webrtc/base/checks.h"
 #include "webrtc/base/format_macros.h"
+#include "webrtc/base/timeutils.h"
+#include "webrtc/modules/audio_device/android/audio_common.h"
 #include "webrtc/modules/audio_device/android/audio_manager.h"
 #include "webrtc/modules/audio_device/fine_audio_buffer.h"
 
@@ -25,28 +27,29 @@
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-#define RETURN_ON_ERROR(op, ...)        \
-  do {                                  \
-    SLresult err = (op);                \
-    if (err != SL_RESULT_SUCCESS) {     \
-      ALOGE("%s failed: %d", #op, err); \
-      return __VA_ARGS__;               \
-    }                                   \
+#define RETURN_ON_ERROR(op, ...)                          \
+  do {                                                    \
+    SLresult err = (op);                                  \
+    if (err != SL_RESULT_SUCCESS) {                       \
+      ALOGE("%s failed: %s", #op, GetSLErrorString(err)); \
+      return __VA_ARGS__;                                 \
+    }                                                     \
   } while (0)
 
 namespace webrtc {
 
 OpenSLESPlayer::OpenSLESPlayer(AudioManager* audio_manager)
-    : audio_parameters_(audio_manager->GetPlayoutAudioParameters()),
-      audio_device_buffer_(NULL),
+    : audio_manager_(audio_manager),
+      audio_parameters_(audio_manager->GetPlayoutAudioParameters()),
+      audio_device_buffer_(nullptr),
       initialized_(false),
       playing_(false),
-      bytes_per_buffer_(0),
       buffer_index_(0),
       engine_(nullptr),
       player_(nullptr),
       simple_buffer_queue_(nullptr),
-      volume_(nullptr) {
+      volume_(nullptr),
+      last_play_time_(0) {
   ALOGD("ctor%s", GetThreadInfo().c_str());
   // Use native audio output parameters provided by the audio manager and
   // define the PCM format structure.
@@ -64,8 +67,7 @@ OpenSLESPlayer::~OpenSLESPlayer() {
   Terminate();
   DestroyAudioPlayer();
   DestroyMix();
-  DestroyEngine();
-  RTC_DCHECK(!engine_object_.Get());
+  engine_ = nullptr;
   RTC_DCHECK(!engine_);
   RTC_DCHECK(!output_mix_.Get());
   RTC_DCHECK(!player_);
@@ -91,7 +93,10 @@ int OpenSLESPlayer::InitPlayout() {
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   RTC_DCHECK(!initialized_);
   RTC_DCHECK(!playing_);
-  CreateEngine();
+  if (!ObtainEngineInterface()) {
+    ALOGE("Failed to obtain SL Engine interface");
+    return -1;
+  }
   CreateMix();
   initialized_ = true;
   buffer_index_ = 0;
@@ -103,6 +108,9 @@ int OpenSLESPlayer::StartPlayout() {
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   RTC_DCHECK(initialized_);
   RTC_DCHECK(!playing_);
+  if (fine_audio_buffer_) {
+    fine_audio_buffer_->ResetPlayout();
+  }
   // The number of lower latency audio players is limited, hence we create the
   // audio player in Start() and destroy it in Stop().
   CreateAudioPlayer();
@@ -110,8 +118,9 @@ int OpenSLESPlayer::StartPlayout() {
   // starts when mode is later changed to SL_PLAYSTATE_PLAYING.
   // TODO(henrika): we can save some delay by only making one call to
   // EnqueuePlayoutData. Most likely not worth the risk of adding a glitch.
+  last_play_time_ = rtc::Time();
   for (int i = 0; i < kNumOfOpenSLESBuffers; ++i) {
-    EnqueuePlayoutData();
+    EnqueuePlayoutData(true);
   }
   // Start streaming data by setting the play state to SL_PLAYSTATE_PLAYING.
   // For a player object, when the object is in the SL_PLAYSTATE_PLAYING
@@ -132,12 +141,12 @@ int OpenSLESPlayer::StopPlayout() {
   RETURN_ON_ERROR((*player_)->SetPlayState(player_, SL_PLAYSTATE_STOPPED), -1);
   // Clear the buffer queue to flush out any remaining data.
   RETURN_ON_ERROR((*simple_buffer_queue_)->Clear(simple_buffer_queue_), -1);
-#ifndef NDEBUG
+#if RTC_DCHECK_IS_ON
   // Verify that the buffer queue is in fact cleared as it should.
   SLAndroidSimpleBufferQueueState buffer_queue_state;
   (*simple_buffer_queue_)->GetState(simple_buffer_queue_, &buffer_queue_state);
-  RTC_DCHECK_EQ(0u, buffer_queue_state.count);
-  RTC_DCHECK_EQ(0u, buffer_queue_state.index);
+  RTC_DCHECK_EQ(0, buffer_queue_state.count);
+  RTC_DCHECK_EQ(0, buffer_queue_state.index);
 #endif
   // The number of lower latency audio players is limited, hence we create the
   // audio player in Start() and destroy it in Stop().
@@ -176,56 +185,11 @@ void OpenSLESPlayer::AttachAudioBuffer(AudioDeviceBuffer* audioBuffer) {
   const int sample_rate_hz = audio_parameters_.sample_rate();
   ALOGD("SetPlayoutSampleRate(%d)", sample_rate_hz);
   audio_device_buffer_->SetPlayoutSampleRate(sample_rate_hz);
-  const int channels = audio_parameters_.channels();
-  ALOGD("SetPlayoutChannels(%d)", channels);
+  const size_t channels = audio_parameters_.channels();
+  ALOGD("SetPlayoutChannels(%" PRIuS ")", channels);
   audio_device_buffer_->SetPlayoutChannels(channels);
   RTC_CHECK(audio_device_buffer_);
   AllocateDataBuffers();
-}
-
-SLDataFormat_PCM OpenSLESPlayer::CreatePCMConfiguration(
-    int channels,
-    int sample_rate,
-    size_t bits_per_sample) {
-  ALOGD("CreatePCMConfiguration");
-  RTC_CHECK_EQ(bits_per_sample, SL_PCMSAMPLEFORMAT_FIXED_16);
-  SLDataFormat_PCM format;
-  format.formatType = SL_DATAFORMAT_PCM;
-  format.numChannels = static_cast<SLuint32>(channels);
-  // Note that, the unit of sample rate is actually in milliHertz and not Hertz.
-  switch (sample_rate) {
-    case 8000:
-      format.samplesPerSec = SL_SAMPLINGRATE_8;
-      break;
-    case 16000:
-      format.samplesPerSec = SL_SAMPLINGRATE_16;
-      break;
-    case 22050:
-      format.samplesPerSec = SL_SAMPLINGRATE_22_05;
-      break;
-    case 32000:
-      format.samplesPerSec = SL_SAMPLINGRATE_32;
-      break;
-    case 44100:
-      format.samplesPerSec = SL_SAMPLINGRATE_44_1;
-      break;
-    case 48000:
-      format.samplesPerSec = SL_SAMPLINGRATE_48;
-      break;
-    default:
-      RTC_CHECK(false) << "Unsupported sample rate: " << sample_rate;
-  }
-  format.bitsPerSample = SL_PCMSAMPLEFORMAT_FIXED_16;
-  format.containerSize = SL_PCMSAMPLEFORMAT_FIXED_16;
-  format.endianness = SL_BYTEORDER_LITTLEENDIAN;
-  if (format.numChannels == 1)
-    format.channelMask = SL_SPEAKER_FRONT_CENTER;
-  else if (format.numChannels == 2)
-    format.channelMask = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
-  else
-    RTC_CHECK(false) << "Unsupported number of channels: "
-                     << format.numChannels;
-  return format;
 }
 
 void OpenSLESPlayer::AllocateDataBuffers() {
@@ -233,50 +197,44 @@ void OpenSLESPlayer::AllocateDataBuffers() {
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   RTC_DCHECK(!simple_buffer_queue_);
   RTC_CHECK(audio_device_buffer_);
-  bytes_per_buffer_ = audio_parameters_.GetBytesPerBuffer();
-  ALOGD("native buffer size: %" PRIuS, bytes_per_buffer_);
   // Create a modified audio buffer class which allows us to ask for any number
   // of samples (and not only multiple of 10ms) to match the native OpenSL ES
-  // buffer size.
-  fine_buffer_.reset(new FineAudioBuffer(audio_device_buffer_,
-                                         bytes_per_buffer_,
-                                         audio_parameters_.sample_rate()));
-  // Each buffer must be of this size to avoid unnecessary memcpy while caching
-  // data between successive callbacks.
-  const size_t required_buffer_size =
-      fine_buffer_->RequiredPlayoutBufferSizeBytes();
-  ALOGD("required buffer size: %" PRIuS, required_buffer_size);
+  // buffer size. The native buffer size corresponds to the
+  // PROPERTY_OUTPUT_FRAMES_PER_BUFFER property which is the number of audio
+  // frames that the HAL (Hardware Abstraction Layer) buffer can hold. It is
+  // recommended to construct audio buffers so that they contain an exact
+  // multiple of this number. If so, callbacks will occur at regular intervals,
+  // which reduces jitter.
+  const size_t buffer_size_in_bytes = audio_parameters_.GetBytesPerBuffer();
+  ALOGD("native buffer size: %" PRIuS, buffer_size_in_bytes);
+  ALOGD("native buffer size in ms: %.2f",
+        audio_parameters_.GetBufferSizeInMilliseconds());
+  fine_audio_buffer_.reset(
+      new FineAudioBuffer(audio_device_buffer_, buffer_size_in_bytes,
+                          audio_parameters_.sample_rate()));
+  // Allocated memory for audio buffers.
   for (int i = 0; i < kNumOfOpenSLESBuffers; ++i) {
-    audio_buffers_[i].reset(new SLint8[required_buffer_size]);
+    audio_buffers_[i].reset(new SLint8[buffer_size_in_bytes]);
   }
 }
 
-bool OpenSLESPlayer::CreateEngine() {
-  ALOGD("CreateEngine");
+bool OpenSLESPlayer::ObtainEngineInterface() {
+  ALOGD("ObtainEngineInterface");
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
-  if (engine_object_.Get())
+  if (engine_)
     return true;
-  RTC_DCHECK(!engine_);
-  const SLEngineOption option[] = {
-    {SL_ENGINEOPTION_THREADSAFE, static_cast<SLuint32>(SL_BOOLEAN_TRUE)}};
+  // Get access to (or create if not already existing) the global OpenSL Engine
+  // object.
+  SLObjectItf engine_object = audio_manager_->GetOpenSLEngine();
+  if (engine_object == nullptr) {
+    ALOGE("Failed to access the global OpenSL engine");
+    return false;
+  }
+  // Get the SL Engine Interface which is implicit.
   RETURN_ON_ERROR(
-      slCreateEngine(engine_object_.Receive(), 1, option, 0, NULL, NULL),
+      (*engine_object)->GetInterface(engine_object, SL_IID_ENGINE, &engine_),
       false);
-  RETURN_ON_ERROR(
-      engine_object_->Realize(engine_object_.Get(), SL_BOOLEAN_FALSE), false);
-  RETURN_ON_ERROR(engine_object_->GetInterface(engine_object_.Get(),
-                                               SL_IID_ENGINE, &engine_),
-                  false);
   return true;
-}
-
-void OpenSLESPlayer::DestroyEngine() {
-  ALOGD("DestroyEngine");
-  RTC_DCHECK(thread_checker_.CalledOnValidThread());
-  if (!engine_object_.Get())
-    return;
-  engine_ = nullptr;
-  engine_object_.Reset();
 }
 
 bool OpenSLESPlayer::CreateMix() {
@@ -288,7 +246,7 @@ bool OpenSLESPlayer::CreateMix() {
 
   // Create the ouput mix on the engine object. No interfaces will be used.
   RETURN_ON_ERROR((*engine_)->CreateOutputMix(engine_, output_mix_.Receive(), 0,
-                                              NULL, NULL),
+                                              nullptr, nullptr),
                   false);
   RETURN_ON_ERROR(output_mix_->Realize(output_mix_.Get(), SL_BOOLEAN_FALSE),
                   false);
@@ -306,7 +264,6 @@ void OpenSLESPlayer::DestroyMix() {
 bool OpenSLESPlayer::CreateAudioPlayer() {
   ALOGD("CreateAudioPlayer");
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
-  RTC_DCHECK(engine_object_.Get());
   RTC_DCHECK(output_mix_.Get());
   if (player_object_.Get())
     return true;
@@ -323,7 +280,7 @@ bool OpenSLESPlayer::CreateAudioPlayer() {
   // sink: OutputMix-based data is sink.
   SLDataLocator_OutputMix locator_output_mix = {SL_DATALOCATOR_OUTPUTMIX,
                                                 output_mix_.Get()};
-  SLDataSink audio_sink = {&locator_output_mix, NULL};
+  SLDataSink audio_sink = {&locator_output_mix, nullptr};
 
   // Define interfaces that we indend to use and realize.
   const SLInterfaceID interface_ids[] = {
@@ -393,6 +350,8 @@ void OpenSLESPlayer::DestroyAudioPlayer() {
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   if (!player_object_.Get())
     return;
+  (*simple_buffer_queue_)
+      ->RegisterCallback(simple_buffer_queue_, nullptr, nullptr);
   player_object_.Reset();
   player_ = nullptr;
   simple_buffer_queue_ = nullptr;
@@ -414,19 +373,37 @@ void OpenSLESPlayer::FillBufferQueue() {
     ALOGW("Buffer callback in non-playing state!");
     return;
   }
-  EnqueuePlayoutData();
+  EnqueuePlayoutData(false);
 }
 
-void OpenSLESPlayer::EnqueuePlayoutData() {
-  // Read audio data from the WebRTC source using the FineAudioBuffer object
-  // to adjust for differences in buffer size between WebRTC (10ms) and native
-  // OpenSL ES.
+void OpenSLESPlayer::EnqueuePlayoutData(bool silence) {
+  // Check delta time between two successive callbacks and provide a warning
+  // if it becomes very large.
+  // TODO(henrika): using 150ms as upper limit but this value is rather random.
+  const uint32_t current_time = rtc::Time();
+  const uint32_t diff = current_time - last_play_time_;
+  if (diff > 150) {
+    ALOGW("Bad OpenSL ES playout timing, dT=%u [ms]", diff);
+  }
+  last_play_time_ = current_time;
   SLint8* audio_ptr = audio_buffers_[buffer_index_].get();
-  fine_buffer_->GetPlayoutData(audio_ptr);
+  if (silence) {
+    RTC_DCHECK(thread_checker_.CalledOnValidThread());
+    // Avoid aquiring real audio data from WebRTC and fill the buffer with
+    // zeros instead. Used to prime the buffer with silence and to avoid asking
+    // for audio data from two different threads.
+    memset(audio_ptr, 0, audio_parameters_.GetBytesPerBuffer());
+  } else {
+    RTC_DCHECK(thread_checker_opensles_.CalledOnValidThread());
+    // Read audio data from the WebRTC source using the FineAudioBuffer object
+    // to adjust for differences in buffer size between WebRTC (10ms) and native
+    // OpenSL ES.
+    fine_audio_buffer_->GetPlayoutData(audio_ptr);
+  }
   // Enqueue the decoded audio buffer for playback.
-  SLresult err =
-      (*simple_buffer_queue_)
-          ->Enqueue(simple_buffer_queue_, audio_ptr, bytes_per_buffer_);
+  SLresult err = (*simple_buffer_queue_)
+                     ->Enqueue(simple_buffer_queue_, audio_ptr,
+                               audio_parameters_.GetBytesPerBuffer());
   if (SL_RESULT_SUCCESS != err) {
     ALOGE("Enqueue failed: %d", err);
   }

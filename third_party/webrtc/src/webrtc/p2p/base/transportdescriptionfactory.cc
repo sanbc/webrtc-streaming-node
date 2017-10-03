@@ -10,6 +10,8 @@
 
 #include "webrtc/p2p/base/transportdescriptionfactory.h"
 
+#include <memory>
+
 #include "webrtc/p2p/base/transportdescription.h"
 #include "webrtc/base/helpers.h"
 #include "webrtc/base/logging.h"
@@ -25,7 +27,7 @@ TransportDescriptionFactory::TransportDescriptionFactory()
 TransportDescription* TransportDescriptionFactory::CreateOffer(
     const TransportOptions& options,
     const TransportDescription* current_description) const {
-  rtc::scoped_ptr<TransportDescription> desc(new TransportDescription());
+  std::unique_ptr<TransportDescription> desc(new TransportDescription());
 
   // Generate the ICE credentials if we don't already have them.
   if (!current_description || options.ice_restart) {
@@ -34,6 +36,10 @@ TransportDescription* TransportDescriptionFactory::CreateOffer(
   } else {
     desc->ice_ufrag = current_description->ice_ufrag;
     desc->ice_pwd = current_description->ice_pwd;
+  }
+  desc->AddOption(ICE_OPTION_TRICKLE);
+  if (options.enable_ice_renomination) {
+    desc->AddOption(ICE_OPTION_RENOMINATION);
   }
 
   // If we are trying to establish a secure transport, add a fingerprint.
@@ -51,6 +57,7 @@ TransportDescription* TransportDescriptionFactory::CreateOffer(
 TransportDescription* TransportDescriptionFactory::CreateAnswer(
     const TransportDescription* offer,
     const TransportOptions& options,
+    bool require_transport_attributes,
     const TransportDescription* current_description) const {
   // TODO(juberti): Figure out why we get NULL offers, and fix this upstream.
   if (!offer) {
@@ -59,7 +66,7 @@ TransportDescription* TransportDescriptionFactory::CreateAnswer(
     return NULL;
   }
 
-  rtc::scoped_ptr<TransportDescription> desc(new TransportDescription());
+  std::unique_ptr<TransportDescription> desc(new TransportDescription());
   // Generate the ICE credentials if we don't already have them or ice is
   // being restarted.
   if (!current_description || options.ice_restart) {
@@ -68,6 +75,10 @@ TransportDescription* TransportDescriptionFactory::CreateAnswer(
   } else {
     desc->ice_ufrag = current_description->ice_ufrag;
     desc->ice_pwd = current_description->ice_pwd;
+  }
+  desc->AddOption(ICE_OPTION_TRICKLE);
+  if (options.enable_ice_renomination) {
+    desc->AddOption(ICE_OPTION_RENOMINATION);
   }
 
   // Negotiate security params.
@@ -83,7 +94,7 @@ TransportDescription* TransportDescriptionFactory::CreateAnswer(
         return NULL;
       }
     }
-  } else if (secure_ == SEC_REQUIRED) {
+  } else if (require_transport_attributes && secure_ == SEC_REQUIRED) {
     // We require DTLS, but the other side didn't offer it. Fail.
     LOG(LS_WARNING) << "Failed to create TransportDescription answer "
                        "because of incompatible security settings";
@@ -102,7 +113,12 @@ bool TransportDescriptionFactory::SetSecurityInfo(
 
   // This digest algorithm is used to produce the a=fingerprint lines in SDP.
   // RFC 4572 Section 5 requires that those lines use the same hash function as
-  // the certificate's signature.
+  // the certificate's signature, which is what CreateFromCertificate does.
+  desc->identity_fingerprint.reset(
+      rtc::SSLFingerprint::CreateFromCertificate(certificate_));
+  if (!desc->identity_fingerprint) {
+    return false;
+  }
   std::string digest_alg;
   if (!certificate_->ssl_certificate().GetSignatureDigestAlgorithm(
           &digest_alg)) {

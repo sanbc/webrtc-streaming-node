@@ -14,34 +14,27 @@
 #include <math.h>   // pow()
 #include <string.h>  // memcpy()
 
-#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
-#include "webrtc/system_wrappers/interface/logging.h"
-#include "webrtc/system_wrappers/interface/trace_event.h"
+#include "webrtc/common_types.h"
+#include "webrtc/base/logging.h"
+#include "webrtc/base/trace_event.h"
 
 namespace webrtc {
 RTPReceiverStrategy* RTPReceiverStrategy::CreateAudioStrategy(
-    RtpData* data_callback,
-    RtpAudioFeedback* incoming_messages_callback) {
-  return new RTPReceiverAudio(data_callback, incoming_messages_callback);
+    RtpData* data_callback) {
+  return new RTPReceiverAudio(data_callback);
 }
 
-RTPReceiverAudio::RTPReceiverAudio(RtpData* data_callback,
-                                   RtpAudioFeedback* incoming_messages_callback)
+RTPReceiverAudio::RTPReceiverAudio(RtpData* data_callback)
     : RTPReceiverStrategy(data_callback),
       TelephoneEventHandler(),
-      last_received_frequency_(8000),
       telephone_event_forward_to_decoder_(false),
       telephone_event_payload_type_(-1),
       cng_nb_payload_type_(-1),
       cng_wb_payload_type_(-1),
       cng_swb_payload_type_(-1),
       cng_fb_payload_type_(-1),
-      cng_payload_type_(-1),
-      g722_payload_type_(-1),
-      last_received_g722_(false),
       num_energy_(0),
-      current_remote_energy_(),
-      cb_audio_feedback_(incoming_messages_callback) {
+      current_remote_energy_() {
   last_payload_.Audio.channels = 1;
   memset(current_remote_energy_, 0, sizeof(current_remote_energy_));
 }
@@ -49,69 +42,28 @@ RTPReceiverAudio::RTPReceiverAudio(RtpData* data_callback,
 // Outband TelephoneEvent(DTMF) detection
 void RTPReceiverAudio::SetTelephoneEventForwardToDecoder(
     bool forward_to_decoder) {
-  CriticalSectionScoped lock(crit_sect_.get());
+  rtc::CritScope lock(&crit_sect_);
   telephone_event_forward_to_decoder_ = forward_to_decoder;
 }
 
 // Is forwarding of outband telephone events turned on/off?
 bool RTPReceiverAudio::TelephoneEventForwardToDecoder() const {
-  CriticalSectionScoped lock(crit_sect_.get());
+  rtc::CritScope lock(&crit_sect_);
   return telephone_event_forward_to_decoder_;
 }
 
 bool RTPReceiverAudio::TelephoneEventPayloadType(
     int8_t payload_type) const {
-  CriticalSectionScoped lock(crit_sect_.get());
+  rtc::CritScope lock(&crit_sect_);
   return telephone_event_payload_type_ == payload_type;
 }
 
-bool RTPReceiverAudio::CNGPayloadType(int8_t payload_type,
-                                      uint32_t* frequency,
-                                      bool* cng_payload_type_has_changed) {
-  CriticalSectionScoped lock(crit_sect_.get());
-  *cng_payload_type_has_changed = false;
-
-  //  We can have four CNG on 8000Hz, 16000Hz, 32000Hz and 48000Hz.
-  if (cng_nb_payload_type_ == payload_type) {
-    *frequency = 8000;
-    if (cng_payload_type_ != -1 && cng_payload_type_ != cng_nb_payload_type_)
-      *cng_payload_type_has_changed = true;
-
-    cng_payload_type_ = cng_nb_payload_type_;
-    return true;
-  } else if (cng_wb_payload_type_ == payload_type) {
-    // if last received codec is G.722 we must use frequency 8000
-    if (last_received_g722_) {
-      *frequency = 8000;
-    } else {
-      *frequency = 16000;
-    }
-    if (cng_payload_type_ != -1 && cng_payload_type_ != cng_wb_payload_type_)
-      *cng_payload_type_has_changed = true;
-    cng_payload_type_ = cng_wb_payload_type_;
-    return true;
-  } else if (cng_swb_payload_type_ == payload_type) {
-    *frequency = 32000;
-    if ((cng_payload_type_ != -1) &&
-        (cng_payload_type_ != cng_swb_payload_type_))
-      *cng_payload_type_has_changed = true;
-    cng_payload_type_ = cng_swb_payload_type_;
-    return true;
-  } else if (cng_fb_payload_type_ == payload_type) {
-    *frequency = 48000;
-    if (cng_payload_type_ != -1 && cng_payload_type_ != cng_fb_payload_type_)
-      *cng_payload_type_has_changed = true;
-    cng_payload_type_ = cng_fb_payload_type_;
-    return true;
-  } else {
-    //  not CNG
-    if (g722_payload_type_ == payload_type) {
-      last_received_g722_ = true;
-    } else {
-      last_received_g722_ = false;
-    }
-  }
-  return false;
+bool RTPReceiverAudio::CNGPayloadType(int8_t payload_type) {
+  rtc::CritScope lock(&crit_sect_);
+  return payload_type == cng_nb_payload_type_ ||
+         payload_type == cng_wb_payload_type_ ||
+         payload_type == cng_swb_payload_type_ ||
+         payload_type == cng_fb_payload_type_;
 }
 
 bool RTPReceiverAudio::ShouldReportCsrcChanges(uint8_t payload_type) const {
@@ -152,24 +104,22 @@ bool RTPReceiverAudio::ShouldReportCsrcChanges(uint8_t payload_type) const {
 // -
 // -   G7221     frame         N/A
 int32_t RTPReceiverAudio::OnNewPayloadTypeCreated(
-    const char payload_name[RTP_PAYLOAD_NAME_SIZE],
-    int8_t payload_type,
-    uint32_t frequency) {
-  CriticalSectionScoped lock(crit_sect_.get());
+    const CodecInst& audio_codec) {
+  rtc::CritScope lock(&crit_sect_);
 
-  if (RtpUtility::StringCompare(payload_name, "telephone-event", 15)) {
-    telephone_event_payload_type_ = payload_type;
+  if (RtpUtility::StringCompare(audio_codec.plname, "telephone-event", 15)) {
+    telephone_event_payload_type_ = audio_codec.pltype;
   }
-  if (RtpUtility::StringCompare(payload_name, "cn", 2)) {
-    //  we can have three CNG on 8000Hz, 16000Hz and 32000Hz
-    if (frequency == 8000) {
-      cng_nb_payload_type_ = payload_type;
-    } else if (frequency == 16000) {
-      cng_wb_payload_type_ = payload_type;
-    } else if (frequency == 32000) {
-      cng_swb_payload_type_ = payload_type;
-    } else if (frequency == 48000) {
-      cng_fb_payload_type_ = payload_type;
+  if (RtpUtility::StringCompare(audio_codec.plname, "cn", 2)) {
+    // We support comfort noise at four different frequencies.
+    if (audio_codec.plfreq == 8000) {
+      cng_nb_payload_type_ = audio_codec.pltype;
+    } else if (audio_codec.plfreq == 16000) {
+      cng_wb_payload_type_ = audio_codec.pltype;
+    } else if (audio_codec.plfreq == 32000) {
+      cng_swb_payload_type_ = audio_codec.pltype;
+    } else if (audio_codec.plfreq == 48000) {
+      cng_fb_payload_type_ = audio_codec.pltype;
     } else {
       assert(false);
       return -1;
@@ -197,19 +147,15 @@ int32_t RTPReceiverAudio::ParseRtpPacket(WebRtcRTPHeader* rtp_header,
            rtp_header->type.Audio.numEnergy);
   }
 
+  if (first_packet_received_()) {
+    LOG(LS_INFO) << "Received first audio RTP packet";
+  }
+
   return ParseAudioCodecSpecific(rtp_header,
                                  payload,
                                  payload_length,
                                  specific_payload.Audio,
                                  is_red);
-}
-
-int RTPReceiverAudio::GetPayloadTypeFrequency() const {
-  CriticalSectionScoped lock(crit_sect_.get());
-  if (last_received_g722_) {
-    return 8000;
-  }
-  return last_received_frequency_;
 }
 
 RTPAliveType RTPReceiverAudio::ProcessDeadOrAlive(
@@ -225,30 +171,14 @@ RTPAliveType RTPReceiverAudio::ProcessDeadOrAlive(
 }
 
 void RTPReceiverAudio::CheckPayloadChanged(int8_t payload_type,
-                                           PayloadUnion* specific_payload,
+                                           PayloadUnion* /* specific_payload */,
                                            bool* should_discard_changes) {
-  *should_discard_changes = false;
-
-  if (TelephoneEventPayloadType(payload_type)) {
-    // Don't do callbacks for DTMF packets.
-    *should_discard_changes = true;
-    return;
-  }
-  // frequency is updated for CNG
-  bool cng_payload_type_has_changed = false;
-  bool is_cng_payload_type = CNGPayloadType(payload_type,
-                                            &specific_payload->Audio.frequency,
-                                            &cng_payload_type_has_changed);
-
-  if (is_cng_payload_type) {
-    // Don't do callbacks for DTMF packets.
-    *should_discard_changes = true;
-    return;
-  }
+  *should_discard_changes =
+      TelephoneEventPayloadType(payload_type) || CNGPayloadType(payload_type);
 }
 
 int RTPReceiverAudio::Energy(uint8_t array_of_energy[kRtpCsrcSize]) const {
-  CriticalSectionScoped cs(crit_sect_.get());
+  rtc::CritScope cs(&crit_sect_);
 
   assert(num_energy_ <= kRtpCsrcSize);
 
@@ -282,15 +212,19 @@ int32_t RTPReceiverAudio::ParseAudioCodecSpecific(
     size_t payload_length,
     const AudioPayload& audio_specific,
     bool is_red) {
-
-  if (payload_length == 0) {
-    return 0;
+  RTC_DCHECK_GE(payload_length, rtp_header->header.paddingLength);
+  const size_t payload_data_length =
+      payload_length - rtp_header->header.paddingLength;
+  if (payload_data_length == 0) {
+    rtp_header->type.Audio.isCNG = false;
+    rtp_header->frameType = kEmptyFrame;
+    return data_callback_->OnReceivedPayloadData(nullptr, 0, rtp_header);
   }
 
   bool telephone_event_packet =
       TelephoneEventPayloadType(rtp_header->header.payloadType);
   if (telephone_event_packet) {
-    CriticalSectionScoped lock(crit_sect_.get());
+    rtc::CritScope lock(&crit_sect_);
 
     // RFC 4733 2.3
     // 0                   1                   2                   3
@@ -299,16 +233,17 @@ int32_t RTPReceiverAudio::ParseAudioCodecSpecific(
     // |     event     |E|R| volume    |          duration             |
     // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     //
-    if (payload_length % 4 != 0) {
+    if (payload_data_length % 4 != 0) {
       return -1;
     }
-    size_t number_of_events = payload_length / 4;
+    size_t number_of_events = payload_data_length / 4;
 
     // sanity
     if (number_of_events >= MAX_NUMBER_OF_PARALLEL_TELEPHONE_EVENTS) {
       number_of_events = MAX_NUMBER_OF_PARALLEL_TELEPHONE_EVENTS;
     }
     for (size_t n = 0; n < number_of_events; ++n) {
+      RTC_DCHECK_GE(payload_data_length, (4 * n) + 2);
       bool end = (payload_data[(4 * n) + 1] & 0x80) ? true : false;
 
       std::set<uint8_t>::iterator event =
@@ -335,18 +270,10 @@ int32_t RTPReceiverAudio::ParseAudioCodecSpecific(
   }
 
   {
-    CriticalSectionScoped lock(crit_sect_.get());
-
-    if (!telephone_event_packet) {
-      last_received_frequency_ = audio_specific.frequency;
-    }
+    rtc::CritScope lock(&crit_sect_);
 
     // Check if this is a CNG packet, receiver might want to know
-    uint32_t ignored;
-    bool also_ignored;
-    if (CNGPayloadType(rtp_header->header.payloadType,
-                       &ignored,
-                       &also_ignored)) {
+    if (CNGPayloadType(rtp_header->header.payloadType)) {
       rtp_header->type.Audio.isCNG = true;
       rtp_header->frameType = kAudioFrameCN;
     } else {
@@ -369,17 +296,18 @@ int32_t RTPReceiverAudio::ParseAudioCodecSpecific(
     }
   }
   // TODO(holmer): Break this out to have RED parsing handled generically.
+  RTC_DCHECK_GT(payload_data_length, 0);
   if (is_red && !(payload_data[0] & 0x80)) {
     // we recive only one frame packed in a RED packet remove the RED wrapper
     rtp_header->header.payloadType = payload_data[0];
 
     // only one frame in the RED strip the one byte to help NetEq
     return data_callback_->OnReceivedPayloadData(
-        payload_data + 1, payload_length - 1, rtp_header);
+        payload_data + 1, payload_data_length - 1, rtp_header);
   }
 
   rtp_header->type.Audio.channel = audio_specific.channels;
-  return data_callback_->OnReceivedPayloadData(
-      payload_data, payload_length, rtp_header);
+  return data_callback_->OnReceivedPayloadData(payload_data,
+                                               payload_data_length, rtp_header);
 }
 }  // namespace webrtc

@@ -11,20 +11,21 @@
 #include <algorithm>
 #include <iterator>
 #include <list>
+#include <memory>
 #include <set>
 
-#include "testing/gtest/include/gtest/gtest.h"
-#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/api/call/transport.h"
+#include "webrtc/base/rate_limiter.h"
 #include "webrtc/common_types.h"
-#include "webrtc/modules/rtp_rtcp/interface/receive_statistics.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_header_parser.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_payload_registry.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_receiver.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp.h"
-#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
-#include "webrtc/transport.h"
+#include "webrtc/modules/rtp_rtcp/include/receive_statistics.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_header_parser.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_payload_registry.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_receiver.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_rtcp.h"
+#include "webrtc/modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "webrtc/test/gtest.h"
 
-using namespace webrtc;
+namespace webrtc {
 
 const int kVideoNackListSize = 30;
 const uint32_t kTestSsrc = 3456;
@@ -34,15 +35,15 @@ const int kTestNumberOfRtxPackets = 149;
 const int kNumFrames = 30;
 const int kPayloadType = 123;
 const int kRtxPayloadType = 98;
+const int64_t kMaxRttMs = 1000;
 
-class VerifyingRtxReceiver : public NullRtpData
-{
+class VerifyingRtxReceiver : public NullRtpData {
  public:
   VerifyingRtxReceiver() {}
 
   int32_t OnReceivedPayloadData(
       const uint8_t* data,
-      const size_t size,
+      size_t size,
       const webrtc::WebRtcRTPHeader* rtp_header) override {
     if (!sequence_numbers_.empty())
       EXPECT_EQ(kTestSsrc, rtp_header->header.ssrc);
@@ -54,10 +55,10 @@ class VerifyingRtxReceiver : public NullRtpData
 
 class TestRtpFeedback : public NullRtpFeedback {
  public:
-  TestRtpFeedback(RtpRtcp* rtp_rtcp) : rtp_rtcp_(rtp_rtcp) {}
+  explicit TestRtpFeedback(RtpRtcp* rtp_rtcp) : rtp_rtcp_(rtp_rtcp) {}
   virtual ~TestRtpFeedback() {}
 
-  void OnIncomingSSRCChanged(const uint32_t ssrc) override {
+  void OnIncomingSSRCChanged(uint32_t ssrc) override {
     rtp_rtcp_->SetRemoteSSRC(ssrc);
   }
 
@@ -86,9 +87,7 @@ class RtxLoopBackTransport : public webrtc::Transport {
     rtp_receiver_ = receiver;
   }
 
-  void DropEveryNthPacket(int n) {
-    packet_loss_ = n;
-  }
+  void DropEveryNthPacket(int n) { packet_loss_ = n; }
 
   void DropConsecutivePackets(int start, int total) {
     consecutive_drop_start_ = start;
@@ -100,18 +99,15 @@ class RtxLoopBackTransport : public webrtc::Transport {
                size_t len,
                const PacketOptions& options) override {
     count_++;
-    const unsigned char* ptr = static_cast<const unsigned  char*>(data);
+    const unsigned char* ptr = static_cast<const unsigned char*>(data);
     uint32_t ssrc = (ptr[8] << 24) + (ptr[9] << 16) + (ptr[10] << 8) + ptr[11];
-    if (ssrc == rtx_ssrc_) count_rtx_ssrc_++;
+    if (ssrc == rtx_ssrc_)
+      count_rtx_ssrc_++;
     uint16_t sequence_number = (ptr[2] << 8) + ptr[3];
     size_t packet_length = len;
-    // TODO(pbos): Figure out why this needs to be initialized. Likely this
-    // is hiding a bug either in test setup or other code.
-    // https://code.google.com/p/webrtc/issues/detail?id=3183
-    uint8_t restored_packet[1500] = {0};
-    uint8_t* restored_packet_ptr = restored_packet;
+    uint8_t restored_packet[1500];
     RTPHeader header;
-    rtc::scoped_ptr<RtpHeaderParser> parser(RtpHeaderParser::Create());
+    std::unique_ptr<RtpHeaderParser> parser(RtpHeaderParser::Create());
     if (!parser->Parse(ptr, len, &header)) {
       return false;
     }
@@ -133,25 +129,23 @@ class RtxLoopBackTransport : public webrtc::Transport {
     if (rtp_payload_registry_->IsRtx(header)) {
       // Remove the RTX header and parse the original RTP header.
       EXPECT_TRUE(rtp_payload_registry_->RestoreOriginalPacket(
-          &restored_packet_ptr, ptr, &packet_length, rtp_receiver_->SSRC(),
-          header));
-      if (!parser->Parse(restored_packet_ptr, packet_length, &header)) {
+          restored_packet, ptr, &packet_length, rtp_receiver_->SSRC(), header));
+      if (!parser->Parse(restored_packet, packet_length, &header)) {
         return false;
       }
+      ptr = restored_packet;
     } else {
       rtp_payload_registry_->SetIncomingPayloadType(header);
     }
 
-    restored_packet_ptr += header.headerLength;
-    packet_length -= header.headerLength;
     PayloadUnion payload_specific;
     if (!rtp_payload_registry_->GetPayloadSpecifics(header.payloadType,
                                                     &payload_specific)) {
       return false;
     }
-    if (!rtp_receiver_->IncomingRtpPacket(header, restored_packet_ptr,
-                                          packet_length, payload_specific,
-                                          true)) {
+    if (!rtp_receiver_->IncomingRtpPacket(header, ptr + header.headerLength,
+                                          packet_length - header.headerLength,
+                                          payload_specific, true)) {
       return false;
     }
     return true;
@@ -175,12 +169,12 @@ class RtxLoopBackTransport : public webrtc::Transport {
 class RtpRtcpRtxNackTest : public ::testing::Test {
  protected:
   RtpRtcpRtxNackTest()
-      : rtp_payload_registry_(RTPPayloadStrategy::CreateStrategy(false)),
-        rtp_rtcp_module_(NULL),
+      : rtp_rtcp_module_(nullptr),
         transport_(kTestSsrc + 1),
         receiver_(),
         payload_data_length(sizeof(payload_data)),
-        fake_clock(123456) {}
+        fake_clock(123456),
+        retransmission_rate_limiter_(&fake_clock, kMaxRttMs) {}
   ~RtpRtcpRtxNackTest() {}
 
   void SetUp() override {
@@ -190,17 +184,16 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
     receive_statistics_.reset(ReceiveStatistics::Create(&fake_clock));
     configuration.receive_statistics = receive_statistics_.get();
     configuration.outgoing_transport = &transport_;
+    configuration.retransmission_rate_limiter = &retransmission_rate_limiter_;
     rtp_rtcp_module_ = RtpRtcp::CreateRtpRtcp(configuration);
 
     rtp_feedback_.reset(new TestRtpFeedback(rtp_rtcp_module_));
 
     rtp_receiver_.reset(RtpReceiver::CreateVideoReceiver(
-        &fake_clock, &receiver_, rtp_feedback_.get(),
-        &rtp_payload_registry_));
+        &fake_clock, &receiver_, rtp_feedback_.get(), &rtp_payload_registry_));
 
     rtp_rtcp_module_->SetSSRC(kTestSsrc);
     rtp_rtcp_module_->SetRTCPStatus(RtcpMode::kCompound);
-    rtp_receiver_->SetNACKStatus(kNackRtcp);
     rtp_rtcp_module_->SetStorePacketsStatus(true, 600);
     EXPECT_EQ(0, rtp_rtcp_module_->SetSendingStatus(true));
     rtp_rtcp_module_->SetSequenceNumber(kTestSequenceNumber);
@@ -216,11 +209,7 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
 
     EXPECT_EQ(0, rtp_rtcp_module_->RegisterSendPayload(video_codec));
     rtp_rtcp_module_->SetRtxSendPayloadType(kRtxPayloadType, kPayloadType);
-    EXPECT_EQ(0, rtp_receiver_->RegisterReceivePayload(video_codec.plName,
-                                                       video_codec.plType,
-                                                       90000,
-                                                       0,
-                                                       video_codec.maxBitrate));
+    EXPECT_EQ(0, rtp_payload_registry_.RegisterReceivePayload(video_codec));
     rtp_payload_registry_.SetRtxPayloadType(kRtxPayloadType, kPayloadType);
 
     for (size_t n = 0; n < payload_data_length; n++) {
@@ -231,8 +220,7 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
   int BuildNackList(uint16_t* nack_list) {
     receiver_.sequence_numbers_.sort();
     std::list<uint16_t> missing_sequence_numbers;
-    std::list<uint16_t>::iterator it =
-        receiver_.sequence_numbers_.begin();
+    std::list<uint16_t>::iterator it = receiver_.sequence_numbers_.begin();
 
     while (it != receiver_.sequence_numbers_.end()) {
       uint16_t sequence_number_1 = *it;
@@ -240,15 +228,14 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
       if (it != receiver_.sequence_numbers_.end()) {
         uint16_t sequence_number_2 = *it;
         // Add all missing sequence numbers to list
-        for (uint16_t i = sequence_number_1 + 1; i < sequence_number_2;
-            ++i) {
+        for (uint16_t i = sequence_number_1 + 1; i < sequence_number_2; ++i) {
           missing_sequence_numbers.push_back(i);
         }
       }
     }
     int n = 0;
     for (it = missing_sequence_numbers.begin();
-        it != missing_sequence_numbers.end(); ++it) {
+         it != missing_sequence_numbers.end(); ++it) {
       nack_list[n++] = (*it);
     }
     return n;
@@ -274,9 +261,9 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
     uint32_t timestamp = 3000;
     uint16_t nack_list[kVideoNackListSize];
     for (int frame = 0; frame < kNumFrames; ++frame) {
-      EXPECT_EQ(0, rtp_rtcp_module_->SendOutgoingData(
-                       webrtc::kVideoFrameDelta, kPayloadType, timestamp,
-                       timestamp / 90, payload_data, payload_data_length));
+      EXPECT_TRUE(rtp_rtcp_module_->SendOutgoingData(
+          webrtc::kVideoFrameDelta, kPayloadType, timestamp, timestamp / 90,
+          payload_data, payload_data_length, nullptr, nullptr, nullptr));
       // Min required delay until retransmit = 5 + RTT ms (RTT = 0).
       fake_clock.AdvanceTimeMilliseconds(5);
       int length = BuildNackList(nack_list);
@@ -292,16 +279,17 @@ class RtpRtcpRtxNackTest : public ::testing::Test {
 
   void TearDown() override { delete rtp_rtcp_module_; }
 
-  rtc::scoped_ptr<ReceiveStatistics> receive_statistics_;
+  std::unique_ptr<ReceiveStatistics> receive_statistics_;
   RTPPayloadRegistry rtp_payload_registry_;
-  rtc::scoped_ptr<RtpReceiver> rtp_receiver_;
+  std::unique_ptr<RtpReceiver> rtp_receiver_;
   RtpRtcp* rtp_rtcp_module_;
-  rtc::scoped_ptr<TestRtpFeedback> rtp_feedback_;
+  std::unique_ptr<TestRtpFeedback> rtp_feedback_;
   RtxLoopBackTransport transport_;
   VerifyingRtxReceiver receiver_;
-  uint8_t  payload_data[65000];
+  uint8_t payload_data[65000];
   size_t payload_data_length;
   SimulatedClock fake_clock;
+  RateLimiter retransmission_rate_limiter_;
 };
 
 TEST_F(RtpRtcpRtxNackTest, LongNackList) {
@@ -319,9 +307,9 @@ TEST_F(RtpRtcpRtxNackTest, LongNackList) {
   // Send 30 frames which at the default size is roughly what we need to get
   // enough packets.
   for (int frame = 0; frame < kNumFrames; ++frame) {
-    EXPECT_EQ(0, rtp_rtcp_module_->SendOutgoingData(
-                     webrtc::kVideoFrameDelta, kPayloadType, timestamp,
-                     timestamp / 90, payload_data, payload_data_length));
+    EXPECT_TRUE(rtp_rtcp_module_->SendOutgoingData(
+        webrtc::kVideoFrameDelta, kPayloadType, timestamp, timestamp / 90,
+        payload_data, payload_data_length, nullptr, nullptr, nullptr));
     // Prepare next frame.
     timestamp += 3000;
     fake_clock.AdvanceTimeMilliseconds(33);
@@ -346,8 +334,10 @@ TEST_F(RtpRtcpRtxNackTest, RtxNack) {
   RunRtxTest(kRtxRetransmitted, 10);
   EXPECT_EQ(kTestSequenceNumber, *(receiver_.sequence_numbers_.begin()));
   EXPECT_EQ(kTestSequenceNumber + kTestNumberOfPackets - 1,
-      *(receiver_.sequence_numbers_.rbegin()));
+            *(receiver_.sequence_numbers_.rbegin()));
   EXPECT_EQ(kTestNumberOfPackets, receiver_.sequence_numbers_.size());
   EXPECT_EQ(kTestNumberOfRtxPackets, transport_.count_rtx_ssrc_);
   EXPECT_TRUE(ExpectedPacketsReceived());
 }
+
+}  // namespace webrtc

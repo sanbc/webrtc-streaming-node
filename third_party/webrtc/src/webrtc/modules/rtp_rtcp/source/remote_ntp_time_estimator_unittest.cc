@@ -8,11 +8,11 @@
 *  be found in the AUTHORS file in the root of the source tree.
 */
 
-#include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gtest/include/gtest/gtest.h"
 #include "webrtc/common_types.h"
-#include "webrtc/modules/rtp_rtcp/interface/remote_ntp_time_estimator.h"
-#include "webrtc/system_wrappers/interface/clock.h"
+#include "webrtc/modules/rtp_rtcp/include/remote_ntp_time_estimator.h"
+#include "webrtc/system_wrappers/include/clock.h"
+#include "webrtc/test/gmock.h"
+#include "webrtc/test/gtest.h"
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -46,12 +46,10 @@ class RemoteNtpTimeEstimatorTest : public ::testing::Test {
 
   void SendRtcpSr() {
     uint32_t rtcp_timestamp = GetRemoteTimestamp();
-    uint32_t ntp_seconds;
-    uint32_t ntp_fractions;
-    remote_clock_.CurrentNtp(ntp_seconds, ntp_fractions);
+    NtpTime ntp = remote_clock_.CurrentNtpTime();
 
     AdvanceTimeMilliseconds(kTestRtt / 2);
-    ReceiveRtcpSr(kTestRtt, rtcp_timestamp, ntp_seconds, ntp_fractions);
+    ReceiveRtcpSr(kTestRtt, rtcp_timestamp, ntp.seconds(), ntp.fractions());
   }
 
   void UpdateRtcpTimestamp(int64_t rtt, uint32_t ntp_secs, uint32_t ntp_frac,

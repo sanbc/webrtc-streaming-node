@@ -38,11 +38,11 @@ public class HudFragment extends Fragment {
   private boolean videoCallEnabled;
   private boolean displayHud;
   private volatile boolean isRunning;
-  private final CpuMonitor cpuMonitor = new CpuMonitor();
+  private CpuMonitor cpuMonitor;
 
   @Override
-  public View onCreateView(LayoutInflater inflater, ViewGroup container,
-      Bundle savedInstanceState) {
+  public View onCreateView(
+      LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
     controlView = inflater.inflate(R.layout.fragment_hud, container, false);
 
     // Create UI controls.
@@ -57,8 +57,8 @@ public class HudFragment extends Fragment {
       @Override
       public void onClick(View view) {
         if (displayHud) {
-          int visibility = (hudViewBwe.getVisibility() == View.VISIBLE)
-              ? View.INVISIBLE : View.VISIBLE;
+          int visibility =
+              (hudViewBwe.getVisibility() == View.VISIBLE) ? View.INVISIBLE : View.VISIBLE;
           hudViewsSetProperties(visibility);
         }
       }
@@ -87,6 +87,10 @@ public class HudFragment extends Fragment {
   public void onStop() {
     isRunning = false;
     super.onStop();
+  }
+
+  public void setCpuMonitor(CpuMonitor cpuMonitor) {
+    this.cpuMonitor = cpuMonitor;
   }
 
   private void hudViewsSetProperties(int visibility) {
@@ -122,8 +126,7 @@ public class HudFragment extends Fragment {
     String actualBitrate = null;
 
     for (StatsReport report : reports) {
-      if (report.type.equals("ssrc") && report.id.contains("ssrc")
-          && report.id.contains("send")) {
+      if (report.type.equals("ssrc") && report.id.contains("ssrc") && report.id.contains("send")) {
         // Send video statistics.
         Map<String, String> reportMap = getReportMap(report);
         String trackId = reportMap.get("googTrackId");
@@ -189,11 +192,13 @@ public class HudFragment extends Fragment {
       }
     }
 
-    if (cpuMonitor.sampleCpuUtilization()) {
+    if (cpuMonitor != null) {
       encoderStat.append("CPU%: ")
-          .append(cpuMonitor.getCpuCurrent()).append("/")
-          .append(cpuMonitor.getCpuAvg3()).append("/")
-          .append(cpuMonitor.getCpuAvgAll());
+          .append(cpuMonitor.getCpuUsageCurrent())
+          .append("/")
+          .append(cpuMonitor.getCpuUsageAverage())
+          .append(". Freq: ")
+          .append(cpuMonitor.getFrequencyScaleAverage());
     }
     encoderStatView.setText(encoderStat.toString());
   }

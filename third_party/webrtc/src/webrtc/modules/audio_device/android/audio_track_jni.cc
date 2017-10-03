@@ -11,6 +11,8 @@
 #include "webrtc/modules/audio_device/android/audio_manager.h"
 #include "webrtc/modules/audio_device/android/audio_track_jni.h"
 
+#include <utility>
+
 #include <android/log.h>
 
 #include "webrtc/base/arraysize.h"
@@ -28,21 +30,21 @@ namespace webrtc {
 
 // AudioTrackJni::JavaAudioTrack implementation.
 AudioTrackJni::JavaAudioTrack::JavaAudioTrack(
-    NativeRegistration* native_reg, rtc::scoped_ptr<GlobalRef> audio_track)
-    : audio_track_(audio_track.Pass()),
-      init_playout_(native_reg->GetMethodId("initPlayout", "(II)V")),
+    NativeRegistration* native_reg,
+    std::unique_ptr<GlobalRef> audio_track)
+    : audio_track_(std::move(audio_track)),
+      init_playout_(native_reg->GetMethodId("initPlayout", "(II)Z")),
       start_playout_(native_reg->GetMethodId("startPlayout", "()Z")),
       stop_playout_(native_reg->GetMethodId("stopPlayout", "()Z")),
       set_stream_volume_(native_reg->GetMethodId("setStreamVolume", "(I)Z")),
-      get_stream_max_volume_(native_reg->GetMethodId(
-          "getStreamMaxVolume", "()I")),
-      get_stream_volume_(native_reg->GetMethodId("getStreamVolume", "()I")) {
-}
+      get_stream_max_volume_(
+          native_reg->GetMethodId("getStreamMaxVolume", "()I")),
+      get_stream_volume_(native_reg->GetMethodId("getStreamVolume", "()I")) {}
 
 AudioTrackJni::JavaAudioTrack::~JavaAudioTrack() {}
 
-void AudioTrackJni::JavaAudioTrack::InitPlayout(int sample_rate, int channels) {
-  audio_track_->CallVoidMethod(init_playout_, sample_rate, channels);
+bool AudioTrackJni::JavaAudioTrack::InitPlayout(int sample_rate, int channels) {
+  return audio_track_->CallBooleanMethod(init_playout_, sample_rate, channels);
 }
 
 bool AudioTrackJni::JavaAudioTrack::StartPlayout() {
@@ -85,13 +87,12 @@ AudioTrackJni::AudioTrackJni(AudioManager* audio_manager)
       {"nativeGetPlayoutData", "(IJ)V",
       reinterpret_cast<void*>(&webrtc::AudioTrackJni::GetPlayoutData)}};
   j_native_registration_ = j_environment_->RegisterNatives(
-      "org/webrtc/voiceengine/WebRtcAudioTrack",
-      native_methods, arraysize(native_methods));
-  j_audio_track_.reset(new JavaAudioTrack(
-      j_native_registration_.get(),
-      j_native_registration_->NewObject(
-          "<init>", "(Landroid/content/Context;J)V",
-          JVM::GetInstance()->context(), PointerTojlong(this))));
+      "org/webrtc/voiceengine/WebRtcAudioTrack", native_methods,
+      arraysize(native_methods));
+  j_audio_track_.reset(
+      new JavaAudioTrack(j_native_registration_.get(),
+                         j_native_registration_->NewObject(
+                             "<init>", "(J)V", PointerTojlong(this))));
   // Detach from this thread since we want to use the checker to verify calls
   // from the Java based audio thread.
   thread_checker_java_.DetachFromThread();
@@ -121,8 +122,11 @@ int32_t AudioTrackJni::InitPlayout() {
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   RTC_DCHECK(!initialized_);
   RTC_DCHECK(!playing_);
-  j_audio_track_->InitPlayout(
-      audio_parameters_.sample_rate(), audio_parameters_.channels());
+  if (!j_audio_track_->InitPlayout(
+      audio_parameters_.sample_rate(), audio_parameters_.channels())) {
+    ALOGE("InitPlayout failed!");
+    return -1;
+  }
   initialized_ = true;
   return 0;
 }
@@ -200,8 +204,8 @@ void AudioTrackJni::AttachAudioBuffer(AudioDeviceBuffer* audioBuffer) {
   const int sample_rate_hz = audio_parameters_.sample_rate();
   ALOGD("SetPlayoutSampleRate(%d)", sample_rate_hz);
   audio_device_buffer_->SetPlayoutSampleRate(sample_rate_hz);
-  const int channels = audio_parameters_.channels();
-  ALOGD("SetPlayoutChannels(%d)", channels);
+  const size_t channels = audio_parameters_.channels();
+  ALOGD("SetPlayoutChannels(%" PRIuS ")", channels);
   audio_device_buffer_->SetPlayoutChannels(channels);
 }
 
@@ -222,7 +226,8 @@ void AudioTrackJni::OnCacheDirectBufferAddress(
   jlong capacity = env->GetDirectBufferCapacity(byte_buffer);
   ALOGD("direct buffer capacity: %lld", capacity);
   direct_buffer_capacity_in_bytes_ = static_cast<size_t>(capacity);
-  frames_per_buffer_ = direct_buffer_capacity_in_bytes_ / kBytesPerFrame;
+  const size_t bytes_per_frame = audio_parameters_.channels() * sizeof(int16_t);
+  frames_per_buffer_ = direct_buffer_capacity_in_bytes_ / bytes_per_frame;
   ALOGD("frames_per_buffer: %" PRIuS, frames_per_buffer_);
 }
 
@@ -237,7 +242,8 @@ void JNICALL AudioTrackJni::GetPlayoutData(
 // the thread is 'AudioRecordTrack'.
 void AudioTrackJni::OnGetPlayoutData(size_t length) {
   RTC_DCHECK(thread_checker_java_.CalledOnValidThread());
-  RTC_DCHECK_EQ(frames_per_buffer_, length / kBytesPerFrame);
+  const size_t bytes_per_frame = audio_parameters_.channels() * sizeof(int16_t);
+  RTC_DCHECK_EQ(frames_per_buffer_, length / bytes_per_frame);
   if (!audio_device_buffer_) {
     ALOGE("AttachAudioBuffer has not been called!");
     return;
@@ -248,11 +254,11 @@ void AudioTrackJni::OnGetPlayoutData(size_t length) {
     ALOGE("AudioDeviceBuffer::RequestPlayoutData failed!");
     return;
   }
-  RTC_DCHECK_EQ(static_cast<size_t>(samples), frames_per_buffer_);
+  RTC_DCHECK_EQ(samples, frames_per_buffer_);
   // Copy decoded data into common byte buffer to ensure that it can be
   // written to the Java based audio track.
   samples = audio_device_buffer_->GetPlayoutData(direct_buffer_address_);
-  RTC_DCHECK_EQ(length, kBytesPerFrame * samples);
+  RTC_DCHECK_EQ(length, bytes_per_frame * samples);
 }
 
 }  // namespace webrtc

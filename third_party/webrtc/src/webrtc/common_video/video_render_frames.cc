@@ -10,29 +10,42 @@
 
 #include "webrtc/common_video/video_render_frames.h"
 
-#include <assert.h>
+#include <utility>
 
-#include "webrtc/modules/interface/module_common_types.h"
-#include "webrtc/system_wrappers/interface/tick_util.h"
-#include "webrtc/system_wrappers/interface/trace.h"
+#include "webrtc/base/logging.h"
+#include "webrtc/base/timeutils.h"
+#include "webrtc/modules/include/module_common_types.h"
+#include "webrtc/system_wrappers/include/trace.h"
 
 namespace webrtc {
+namespace {
+// Don't render frames with timestamp older than 500ms from now.
+const int kOldRenderTimestampMS = 500;
+// Don't render frames with timestamp more than 10s into the future.
+const int kFutureRenderTimestampMS = 10000;
 
-const uint32_t KEventMaxWaitTimeMs = 200;
+const uint32_t kEventMaxWaitTimeMs = 200;
 const uint32_t kMinRenderDelayMs = 10;
-const uint32_t kMaxRenderDelayMs= 500;
+const uint32_t kMaxRenderDelayMs = 500;
+const size_t kMaxIncomingFramesBeforeLogged = 100;
 
-VideoRenderFrames::VideoRenderFrames()
-    : render_delay_ms_(10) {
+uint32_t EnsureValidRenderDelay(uint32_t render_delay) {
+  return (render_delay < kMinRenderDelayMs || render_delay > kMaxRenderDelayMs)
+             ? kMinRenderDelayMs
+             : render_delay;
 }
+}  // namespace
 
-int32_t VideoRenderFrames::AddFrame(const VideoFrame& new_frame) {
-  const int64_t time_now = TickTime::MillisecondTimestamp();
+VideoRenderFrames::VideoRenderFrames(uint32_t render_delay_ms)
+    : render_delay_ms_(EnsureValidRenderDelay(render_delay_ms)) {}
+
+int32_t VideoRenderFrames::AddFrame(VideoFrame&& new_frame) {
+  const int64_t time_now = rtc::TimeMillis();
 
   // Drop old frames only when there are other frames in the queue, otherwise, a
   // really slow system never renders any frames.
   if (!incoming_frames_.empty() &&
-      new_frame.render_time_ms() + KOldRenderTimestampMS < time_now) {
+      new_frame.render_time_ms() + kOldRenderTimestampMS < time_now) {
     WEBRTC_TRACE(kTraceWarning,
                  kTraceVideoRenderer,
                  -1,
@@ -42,54 +55,54 @@ int32_t VideoRenderFrames::AddFrame(const VideoFrame& new_frame) {
     return -1;
   }
 
-  if (new_frame.render_time_ms() > time_now + KFutureRenderTimestampMS) {
+  if (new_frame.render_time_ms() > time_now + kFutureRenderTimestampMS) {
     WEBRTC_TRACE(kTraceWarning, kTraceVideoRenderer, -1,
                  "%s: frame too long into the future, timestamp=%u.",
                  __FUNCTION__, new_frame.timestamp());
     return -1;
   }
 
-  incoming_frames_.push_back(new_frame);
+  if (new_frame.render_time_ms() < last_render_time_ms_) {
+    WEBRTC_TRACE(kTraceWarning, kTraceVideoRenderer, -1,
+                 "%s: frame scheduled out of order, render_time=%u, latest=%u.",
+                 __FUNCTION__, new_frame.render_time_ms(),
+                 last_render_time_ms_);
+    // For more details, see bug:
+    // https://bugs.chromium.org/p/webrtc/issues/detail?id=7253
+    return -1;
+  }
+
+  last_render_time_ms_ = new_frame.render_time_ms();
+  incoming_frames_.emplace_back(std::move(new_frame));
+
+  if (incoming_frames_.size() > kMaxIncomingFramesBeforeLogged)
+    LOG(LS_WARNING) << "Stored incoming frames: " << incoming_frames_.size();
   return static_cast<int32_t>(incoming_frames_.size());
 }
 
-VideoFrame VideoRenderFrames::FrameToRender() {
-  VideoFrame render_frame;
+rtc::Optional<VideoFrame> VideoRenderFrames::FrameToRender() {
+  rtc::Optional<VideoFrame> render_frame;
   // Get the newest frame that can be released for rendering.
   while (!incoming_frames_.empty() && TimeToNextFrameRelease() <= 0) {
-    render_frame = incoming_frames_.front();
+    render_frame =
+        rtc::Optional<VideoFrame>(std::move(incoming_frames_.front()));
     incoming_frames_.pop_front();
   }
   return render_frame;
 }
 
-int32_t VideoRenderFrames::ReleaseAllFrames() {
-  incoming_frames_.clear();
-  return 0;
-}
-
 uint32_t VideoRenderFrames::TimeToNextFrameRelease() {
   if (incoming_frames_.empty()) {
-    return KEventMaxWaitTimeMs;
+    return kEventMaxWaitTimeMs;
   }
   const int64_t time_to_release = incoming_frames_.front().render_time_ms() -
                                   render_delay_ms_ -
-                                  TickTime::MillisecondTimestamp();
+                                  rtc::TimeMillis();
   return time_to_release < 0 ? 0u : static_cast<uint32_t>(time_to_release);
 }
 
-int32_t VideoRenderFrames::SetRenderDelay(
-    const uint32_t render_delay) {
-  if (render_delay < kMinRenderDelayMs ||
-      render_delay > kMaxRenderDelayMs) {
-    WEBRTC_TRACE(kTraceWarning, kTraceVideoRenderer,
-                 -1, "%s(%d): Invalid argument.", __FUNCTION__,
-                 render_delay);
-    return -1;
-  }
-
-  render_delay_ms_ = render_delay;
-  return 0;
+bool VideoRenderFrames::HasPendingFrames() const {
+  return !incoming_frames_.empty();
 }
 
 }  // namespace webrtc

@@ -11,8 +11,9 @@
 #ifndef MODULES_AUDIO_DEVICE_INCLUDE_AUDIO_DEVICE_H_
 #define MODULES_AUDIO_DEVICE_INCLUDE_AUDIO_DEVICE_H_
 
+#include "webrtc/base/scoped_ref_ptr.h"
 #include "webrtc/modules/audio_device/include/audio_device_defines.h"
-#include "webrtc/modules/interface/module.h"
+#include "webrtc/modules/include/module.h"
 
 namespace webrtc {
 
@@ -25,12 +26,12 @@ class AudioDeviceModule : public RefCountedModule {
 
   enum AudioLayer {
     kPlatformDefaultAudio = 0,
-    kWindowsWaveAudio = 1,
     kWindowsCoreAudio = 2,
     kLinuxAlsaAudio = 3,
     kLinuxPulseAudio = 4,
     kAndroidJavaAudio = 5,
-    kAndroidJavaInputAndOpenSLESOutputAudio = 6,
+    kAndroidOpenSLESAudio = 6,
+    kAndroidJavaInputAndOpenSLESOutputAudio = 7,
     kDummyAudio = 8
   };
 
@@ -51,6 +52,11 @@ class AudioDeviceModule : public RefCountedModule {
   };
 
  public:
+  // Create an ADM.
+  static rtc::scoped_refptr<AudioDeviceModule> Create(
+      const int32_t id,
+      const AudioLayer audio_layer);
+
   // Retrieve the currently utilized audio layer
   virtual int32_t ActiveAudioLayer(AudioLayer* audioLayer) const = 0;
 
@@ -185,34 +191,24 @@ class AudioDeviceModule : public RefCountedModule {
   virtual int32_t GetLoudspeakerStatus(bool* enabled) const = 0;
 
   // Only supported on Android.
-  // TODO(henrika): Make pure virtual after updating Chromium.
-  virtual bool BuiltInAECIsAvailable() const { return false; }
-  virtual bool BuiltInAGCIsAvailable() const { return false; }
-  virtual bool BuiltInNSIsAvailable() const { return false; }
+  virtual bool BuiltInAECIsAvailable() const = 0;
+  virtual bool BuiltInAGCIsAvailable() const = 0;
+  virtual bool BuiltInNSIsAvailable() const = 0;
 
   // Enables the built-in audio effects. Only supported on Android.
-  // TODO(henrika): Make pure virtual after updating Chromium.
-  virtual int32_t EnableBuiltInAEC(bool enable) { return -1; }
-  virtual int32_t EnableBuiltInAGC(bool enable) { return -1; }
-  virtual int32_t EnableBuiltInNS(bool enable) { return -1; }
-  // Don't use.
-  virtual bool BuiltInAECIsEnabled() const { return false; }
+  virtual int32_t EnableBuiltInAEC(bool enable) = 0;
+  virtual int32_t EnableBuiltInAGC(bool enable) = 0;
+  virtual int32_t EnableBuiltInNS(bool enable) = 0;
 
-  // Only supported on iOS.
-  // TODO(henrika): Make pure virtual after updating Chromium.
-  virtual int GetPlayoutAudioParameters(AudioParameters* params) const {
-    return -1;
-  }
-  virtual int GetRecordAudioParameters(AudioParameters* params) const {
-    return -1;
-  }
+// Only supported on iOS.
+#if defined(WEBRTC_IOS)
+  virtual int GetPlayoutAudioParameters(AudioParameters* params) const = 0;
+  virtual int GetRecordAudioParameters(AudioParameters* params) const = 0;
+#endif  // WEBRTC_IOS
 
  protected:
-  virtual ~AudioDeviceModule() {}
+  ~AudioDeviceModule() override {}
 };
-
-AudioDeviceModule* CreateAudioDeviceModule(
-    int32_t id, AudioDeviceModule::AudioLayer audioLayer);
 
 }  // namespace webrtc
 

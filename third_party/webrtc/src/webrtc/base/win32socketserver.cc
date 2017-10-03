@@ -14,10 +14,9 @@
 #include <ws2tcpip.h>  // NOLINT
 
 #include "webrtc/base/byteorder.h"
-#include "webrtc/base/common.h"
+#include "webrtc/base/checks.h"
 #include "webrtc/base/logging.h"
 #include "webrtc/base/win32window.h"
-#include "webrtc/base/winping.h"
 
 namespace rtc {
 
@@ -28,26 +27,26 @@ namespace rtc {
 // TODO: Move this to a common place where PhysicalSocketServer can
 // share it.
 // Standard MTUs
-static const uint16 PACKET_MAXIMUMS[] = {
-  65535,    // Theoretical maximum, Hyperchannel
-  32000,    // Nothing
-  17914,    // 16Mb IBM Token Ring
-  8166,     // IEEE 802.4
-  // 4464   // IEEE 802.5 (4Mb max)
-  4352,     // FDDI
-  // 2048,  // Wideband Network
-  2002,     // IEEE 802.5 (4Mb recommended)
-  // 1536,  // Expermental Ethernet Networks
-  // 1500,  // Ethernet, Point-to-Point (default)
-  1492,     // IEEE 802.3
-  1006,     // SLIP, ARPANET
-  // 576,   // X.25 Networks
-  // 544,   // DEC IP Portal
-  // 512,   // NETBIOS
-  508,      // IEEE 802/Source-Rt Bridge, ARCNET
-  296,      // Point-to-Point (low delay)
-  68,       // Official minimum
-  0,        // End of list marker
+static const uint16_t PACKET_MAXIMUMS[] = {
+    65535,  // Theoretical maximum, Hyperchannel
+    32000,  // Nothing
+    17914,  // 16Mb IBM Token Ring
+    8166,   // IEEE 802.4
+    // 4464   // IEEE 802.5 (4Mb max)
+    4352,   // FDDI
+    // 2048,  // Wideband Network
+    2002,   // IEEE 802.5 (4Mb recommended)
+    // 1536,  // Expermental Ethernet Networks
+    // 1500,  // Ethernet, Point-to-Point (default)
+    1492,   // IEEE 802.3
+    1006,   // SLIP, ARPANET
+    // 576,   // X.25 Networks
+    // 544,   // DEC IP Portal
+    // 512,   // NETBIOS
+    508,    // IEEE 802/Source-Rt Bridge, ARCNET
+    296,    // Point-to-Point (low delay)
+    68,     // Official minimum
+    0,      // End of list marker
 };
 
 static const int IP_HEADER_SIZE = 20u;
@@ -55,7 +54,7 @@ static const int ICMP_HEADER_SIZE = 8u;
 static const int ICMP_PING_TIMEOUT_MILLIS = 10000u;
 
 // TODO: Enable for production builds also? Use FormatMessage?
-#ifdef _DEBUG
+#if !defined(NDEBUG)
 LPCSTR WSAErrorToString(int error, LPCSTR *description_result) {
   LPCSTR string = "Unspecified";
   LPCSTR description = "Unspecified description";
@@ -143,7 +142,7 @@ void ReportWSAError(LPCSTR context, int error, const SocketAddress& address) {}
 
 struct Win32Socket::DnsLookup {
   HANDLE handle;
-  uint16 port;
+  uint16_t port;
   char buffer[MAXGETHOSTSTRUCT];
 };
 
@@ -165,7 +164,7 @@ class Win32Socket::EventSink : public Win32Window {
 };
 
 void Win32Socket::EventSink::Dispose() {
-  parent_ = NULL;
+  parent_ = nullptr;
   if (::IsWindow(handle())) {
     ::DestroyWindow(handle());
   } else {
@@ -227,9 +226,14 @@ void Win32Socket::EventSink::OnNcDestroy() {
 /////////////////////////////////////////////////////////////////////////////
 
 Win32Socket::Win32Socket()
-    : socket_(INVALID_SOCKET), error_(0), state_(CS_CLOSED), connect_time_(0),
-      closing_(false), close_error_(0), sink_(NULL), dns_(NULL) {
-}
+    : socket_(INVALID_SOCKET),
+      error_(0),
+      state_(CS_CLOSED),
+      connect_time_(0),
+      closing_(false),
+      close_error_(0),
+      sink_(nullptr),
+      dns_(nullptr) {}
 
 Win32Socket::~Win32Socket() {
   Close();
@@ -238,7 +242,7 @@ Win32Socket::~Win32Socket() {
 bool Win32Socket::CreateT(int family, int type) {
   Close();
   int proto = (SOCK_DGRAM == type) ? IPPROTO_UDP : IPPROTO_TCP;
-  socket_ = ::WSASocket(family, type, proto, NULL, NULL, 0);
+  socket_ = ::WSASocket(family, type, proto, nullptr, 0, 0);
   if (socket_ == INVALID_SOCKET) {
     UpdateLastError();
     return false;
@@ -250,11 +254,11 @@ bool Win32Socket::CreateT(int family, int type) {
 }
 
 int Win32Socket::Attach(SOCKET s) {
-  ASSERT(socket_ == INVALID_SOCKET);
+  RTC_DCHECK(socket_ == INVALID_SOCKET);
   if (socket_ != INVALID_SOCKET)
     return SOCKET_ERROR;
 
-  ASSERT(s != INVALID_SOCKET);
+  RTC_DCHECK(s != INVALID_SOCKET);
   if (s == INVALID_SOCKET)
     return SOCKET_ERROR;
 
@@ -303,7 +307,7 @@ SocketAddress Win32Socket::GetRemoteAddress() const {
 }
 
 int Win32Socket::Bind(const SocketAddress& addr) {
-  ASSERT(socket_ != INVALID_SOCKET);
+  RTC_DCHECK(socket_ != INVALID_SOCKET);
   if (socket_ == INVALID_SOCKET)
     return SOCKET_ERROR;
 
@@ -438,7 +442,10 @@ int Win32Socket::SendTo(const void* buffer, size_t length,
   return sent;
 }
 
-int Win32Socket::Recv(void* buffer, size_t length) {
+int Win32Socket::Recv(void* buffer, size_t length, int64_t* timestamp) {
+  if (timestamp) {
+    *timestamp = -1;
+  }
   int received = ::recv(socket_, static_cast<char*>(buffer),
                         static_cast<int>(length), 0);
   UpdateLastError();
@@ -447,8 +454,13 @@ int Win32Socket::Recv(void* buffer, size_t length) {
   return received;
 }
 
-int Win32Socket::RecvFrom(void* buffer, size_t length,
-                          SocketAddress* out_addr) {
+int Win32Socket::RecvFrom(void* buffer,
+                          size_t length,
+                          SocketAddress* out_addr,
+                          int64_t* timestamp) {
+  if (timestamp) {
+    *timestamp = -1;
+  }
   sockaddr_storage saddr;
   socklen_t addr_len = sizeof(saddr);
   int received = ::recvfrom(socket_, static_cast<char*>(buffer),
@@ -479,14 +491,14 @@ Win32Socket* Win32Socket::Accept(SocketAddress* out_addr) {
   SOCKET s = ::accept(socket_, reinterpret_cast<sockaddr*>(&saddr), &addr_len);
   UpdateLastError();
   if (s == INVALID_SOCKET)
-    return NULL;
+    return nullptr;
   if (out_addr)
     SocketAddressFromSockAddrStorage(saddr, out_addr);
   Win32Socket* socket = new Win32Socket;
   if (0 == socket->Attach(s))
     return socket;
   delete socket;
-  return NULL;
+  return nullptr;
 }
 
 int Win32Socket::Close() {
@@ -501,60 +513,29 @@ int Win32Socket::Close() {
   if (dns_) {
     WSACancelAsyncRequest(dns_->handle);
     delete dns_;
-    dns_ = NULL;
+    dns_ = nullptr;
   }
   if (sink_) {
     sink_->Dispose();
-    sink_ = NULL;
+    sink_ = nullptr;
   }
   addr_.Clear();
   state_ = CS_CLOSED;
   return err;
 }
 
-int Win32Socket::EstimateMTU(uint16* mtu) {
-  SocketAddress addr = GetRemoteAddress();
-  if (addr.IsAny()) {
-    error_ = ENOTCONN;
-    return -1;
-  }
-
-  WinPing ping;
-  if (!ping.IsValid()) {
-    error_ = EINVAL;  // can't think of a better error ID
-    return -1;
-  }
-
-  for (int level = 0; PACKET_MAXIMUMS[level + 1] > 0; ++level) {
-    int32 size = PACKET_MAXIMUMS[level] - IP_HEADER_SIZE - ICMP_HEADER_SIZE;
-    WinPing::PingResult result = ping.Ping(addr.ipaddr(), size,
-                                           ICMP_PING_TIMEOUT_MILLIS, 1, false);
-    if (result == WinPing::PING_FAIL) {
-      error_ = EINVAL;  // can't think of a better error ID
-      return -1;
-    }
-    if (result != WinPing::PING_TOO_LARGE) {
-      *mtu = PACKET_MAXIMUMS[level];
-      return 0;
-    }
-  }
-
-  ASSERT(false);
-  return 0;
-}
-
 void Win32Socket::CreateSink() {
-  ASSERT(NULL == sink_);
+  RTC_DCHECK(nullptr == sink_);
 
   // Create window
   sink_ = new EventSink(this);
-  sink_->Create(NULL, L"EventSink", 0, 0, 0, 0, 10, 10);
+  sink_->Create(nullptr, L"EventSink", 0, 0, 0, 0, 10, 10);
 }
 
 bool Win32Socket::SetAsync(int events) {
-  if (NULL == sink_) {
+  if (nullptr == sink_) {
     CreateSink();
-    ASSERT(NULL != sink_);
+    RTC_DCHECK(nullptr != sink_);
   }
 
   // start the async select
@@ -610,7 +591,7 @@ int Win32Socket::TranslateOption(Option opt, int* slevel, int* sopt) {
       LOG(LS_WARNING) << "Socket::OPT_DSCP not supported.";
       return -1;
     default:
-      ASSERT(false);
+      RTC_NOTREACHED();
       return -1;
   }
   return 0;
@@ -626,8 +607,8 @@ void Win32Socket::OnSocketNotify(SOCKET socket, int event, int error) {
     case FD_CONNECT:
       if (error != ERROR_SUCCESS) {
         ReportWSAError("WSAAsync:connect notify", error, addr_);
-#ifdef _DEBUG
-        int32 duration = TimeSince(connect_time_);
+#if !defined(NDEBUG)
+        int64_t duration = TimeSince(connect_time_);
         LOG(LS_INFO) << "WSAAsync:connect error (" << duration
                      << " ms), faking close";
 #endif
@@ -639,8 +620,8 @@ void Win32Socket::OnSocketNotify(SOCKET socket, int event, int error) {
         // though the connect event never did occur.
         SignalCloseEvent(this, error);
       } else {
-#ifdef _DEBUG
-        int32 duration = TimeSince(connect_time_);
+#if !defined(NDEBUG)
+        int64_t duration = TimeSince(connect_time_);
         LOG(LS_INFO) << "WSAAsync:connect (" << duration << " ms)";
 #endif
         state_ = CS_CONNECTED;
@@ -679,10 +660,10 @@ void Win32Socket::OnDnsNotify(HANDLE task, int error) {
   if (!dns_ || dns_->handle != task)
     return;
 
-  uint32 ip = 0;
+  uint32_t ip = 0;
   if (error == 0) {
     hostent* pHost = reinterpret_cast<hostent*>(dns_->buffer);
-    uint32 net_ip = *reinterpret_cast<uint32*>(pHost->h_addr_list[0]);
+    uint32_t net_ip = *reinterpret_cast<uint32_t*>(pHost->h_addr_list[0]);
     ip = NetworkToHost32(net_ip);
   }
 
@@ -701,7 +682,7 @@ void Win32Socket::OnDnsNotify(HANDLE task, int error) {
     SignalCloseEvent(this, error_);
   } else {
     delete dns_;
-    dns_ = NULL;
+    dns_ = nullptr;
   }
 }
 
@@ -713,20 +694,19 @@ void Win32Socket::OnDnsNotify(HANDLE task, int error) {
 static UINT s_wm_wakeup_id = 0;
 const TCHAR Win32SocketServer::kWindowName[] = L"libjingle Message Window";
 
-Win32SocketServer::Win32SocketServer(MessageQueue* message_queue)
-    : message_queue_(message_queue),
-      wnd_(this),
+Win32SocketServer::Win32SocketServer()
+    : wnd_(this),
       posted_(false),
-      hdlg_(NULL) {
+      hdlg_(nullptr) {
   if (s_wm_wakeup_id == 0)
     s_wm_wakeup_id = RegisterWindowMessage(L"WM_WAKEUP");
-  if (!wnd_.Create(NULL, kWindowName, 0, 0, 0, 0, 0, 0)) {
+  if (!wnd_.Create(nullptr, kWindowName, 0, 0, 0, 0, 0, 0)) {
     LOG_GLE(LS_ERROR) << "Failed to create message window.";
   }
 }
 
 Win32SocketServer::~Win32SocketServer() {
-  if (wnd_.handle() != NULL) {
+  if (wnd_.handle() != nullptr) {
     KillTimer(wnd_.handle(), 1);
     wnd_.Destroy();
   }
@@ -750,7 +730,7 @@ AsyncSocket* Win32SocketServer::CreateAsyncSocket(int family, int type) {
     return socket;
   }
   delete socket;
-  return NULL;
+  return nullptr;
 }
 
 void Win32SocketServer::SetMessageQueue(MessageQueue* queue) {
@@ -762,15 +742,15 @@ bool Win32SocketServer::Wait(int cms, bool process_io) {
   if (process_io) {
     // Spin the Win32 message pump at least once, and as long as requested.
     // This is the Thread::ProcessMessages case.
-    uint32 start = Time();
+    uint32_t start = Time();
     do {
       MSG msg;
-      SetTimer(wnd_.handle(), 0, cms, NULL);
+      SetTimer(wnd_.handle(), 0, cms, nullptr);
       // Get the next available message. If we have a modeless dialog, give
       // give the message to IsDialogMessage, which will return true if it
       // was a message for the dialog that it handled internally.
       // Otherwise, dispatch as usual via Translate/DispatchMessage.
-      b = GetMessage(&msg, NULL, 0, 0);
+      b = GetMessage(&msg, nullptr, 0, 0);
       if (b == -1) {
         LOG_GLE(LS_ERROR) << "GetMessage failed.";
         return false;
@@ -784,9 +764,9 @@ bool Win32SocketServer::Wait(int cms, bool process_io) {
     } while (b && TimeSince(start) < cms);
   } else if (cms != 0) {
     // Sit and wait forever for a WakeUp. This is the Thread::Send case.
-    ASSERT(cms == -1);
+    RTC_DCHECK(cms == -1);
     MSG msg;
-    b = GetMessage(&msg, NULL, s_wm_wakeup_id, s_wm_wakeup_id);
+    b = GetMessage(&msg, nullptr, s_wm_wakeup_id, s_wm_wakeup_id);
     {
       CritScope scope(&cs_);
       posted_ = false;
@@ -836,7 +816,7 @@ void Win32SocketServer::Pump() {
   if (delay == -1) {
     KillTimer(wnd_.handle(), 1);
   } else {
-    SetTimer(wnd_.handle(), 1, delay, NULL);
+    SetTimer(wnd_.handle(), 1, delay, nullptr);
   }
 }
 

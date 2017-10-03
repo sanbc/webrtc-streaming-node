@@ -10,16 +10,17 @@
 
 #include "webrtc/examples/peerconnection/client/conductor.h"
 
+#include <memory>
 #include <utility>
 #include <vector>
 
-#include "talk/app/webrtc/videosourceinterface.h"
-#include "webrtc/examples/peerconnection/client/defaults.h"
-#include "talk/media/devices/devicemanager.h"
-#include "talk/app/webrtc/test/fakeconstraints.h"
-#include "webrtc/base/common.h"
+#include "webrtc/api/test/fakeconstraints.h"
+#include "webrtc/base/checks.h"
 #include "webrtc/base/json.h"
 #include "webrtc/base/logging.h"
+#include "webrtc/examples/peerconnection/client/defaults.h"
+#include "webrtc/media/engine/webrtcvideocapturerfactory.h"
+#include "webrtc/modules/video_capture/video_capture_factory.h"
 
 // Names used for a IceCandidate JSON object.
 const char kCandidateSdpMidName[] = "sdpMid";
@@ -62,7 +63,7 @@ Conductor::Conductor(PeerConnectionClient* client, MainWindow* main_wnd)
 }
 
 Conductor::~Conductor() {
-  ASSERT(peer_connection_.get() == NULL);
+  RTC_DCHECK(peer_connection_.get() == NULL);
 }
 
 bool Conductor::connection_active() const {
@@ -75,8 +76,8 @@ void Conductor::Close() {
 }
 
 bool Conductor::InitializePeerConnection() {
-  ASSERT(peer_connection_factory_.get() == NULL);
-  ASSERT(peer_connection_.get() == NULL);
+  RTC_DCHECK(peer_connection_factory_.get() == NULL);
+  RTC_DCHECK(peer_connection_.get() == NULL);
 
   peer_connection_factory_  = webrtc::CreatePeerConnectionFactory();
 
@@ -110,31 +111,25 @@ bool Conductor::ReinitializePeerConnectionForLoopback() {
 }
 
 bool Conductor::CreatePeerConnection(bool dtls) {
-  ASSERT(peer_connection_factory_.get() != NULL);
-  ASSERT(peer_connection_.get() == NULL);
+  RTC_DCHECK(peer_connection_factory_.get() != NULL);
+  RTC_DCHECK(peer_connection_.get() == NULL);
 
-  webrtc::PeerConnectionInterface::IceServers servers;
+  webrtc::PeerConnectionInterface::RTCConfiguration config;
   webrtc::PeerConnectionInterface::IceServer server;
   server.uri = GetPeerConnectionString();
-  servers.push_back(server);
+  config.servers.push_back(server);
 
   webrtc::FakeConstraints constraints;
   if (dtls) {
     constraints.AddOptional(webrtc::MediaConstraintsInterface::kEnableDtlsSrtp,
                             "true");
-  }
-  else
-  {
+  } else {
     constraints.AddOptional(webrtc::MediaConstraintsInterface::kEnableDtlsSrtp,
                             "false");
   }
 
-  peer_connection_ =
-      peer_connection_factory_->CreatePeerConnection(servers,
-                                                     &constraints,
-                                                     NULL,
-                                                     NULL,
-                                                     this);
+  peer_connection_ = peer_connection_factory_->CreatePeerConnection(
+      config, &constraints, NULL, NULL, this);
   return peer_connection_.get() != NULL;
 }
 
@@ -149,7 +144,7 @@ void Conductor::DeletePeerConnection() {
 }
 
 void Conductor::EnsureStreamingUI() {
-  ASSERT(peer_connection_.get() != NULL);
+  RTC_DCHECK(peer_connection_.get() != NULL);
   if (main_wnd_->IsWindow()) {
     if (main_wnd_->current_ui() != MainWindow::STREAMING)
       main_wnd_->SwitchToStreamingUI();
@@ -161,19 +156,16 @@ void Conductor::EnsureStreamingUI() {
 //
 
 // Called when a remote stream is added
-void Conductor::OnAddStream(webrtc::MediaStreamInterface* stream) {
+void Conductor::OnAddStream(
+    rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
   LOG(INFO) << __FUNCTION__ << " " << stream->label();
-
-  stream->AddRef();
-  main_wnd_->QueueUIThreadCallback(NEW_STREAM_ADDED,
-                                   stream);
+  main_wnd_->QueueUIThreadCallback(NEW_STREAM_ADDED, stream.release());
 }
 
-void Conductor::OnRemoveStream(webrtc::MediaStreamInterface* stream) {
+void Conductor::OnRemoveStream(
+    rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
   LOG(INFO) << __FUNCTION__ << " " << stream->label();
-  stream->AddRef();
-  main_wnd_->QueueUIThreadCallback(STREAM_REMOVED,
-                                   stream);
+  main_wnd_->QueueUIThreadCallback(STREAM_REMOVED, stream.release());
 }
 
 void Conductor::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) {
@@ -238,11 +230,11 @@ void Conductor::OnPeerDisconnected(int id) {
 }
 
 void Conductor::OnMessageFromPeer(int peer_id, const std::string& message) {
-  ASSERT(peer_id_ == peer_id || peer_id_ == -1);
-  ASSERT(!message.empty());
+  RTC_DCHECK(peer_id_ == peer_id || peer_id_ == -1);
+  RTC_DCHECK(!message.empty());
 
   if (!peer_connection_.get()) {
-    ASSERT(peer_id_ == -1);
+    RTC_DCHECK(peer_id_ == -1);
     peer_id_ = peer_id;
 
     if (!InitializePeerConnection()) {
@@ -251,7 +243,7 @@ void Conductor::OnMessageFromPeer(int peer_id, const std::string& message) {
       return;
     }
   } else if (peer_id != peer_id_) {
-    ASSERT(peer_id_ != -1);
+    RTC_DCHECK(peer_id_ != -1);
     LOG(WARNING) << "Received a message from unknown peer while already in a "
                     "conversation with a different peer.";
     return;
@@ -314,7 +306,7 @@ void Conductor::OnMessageFromPeer(int peer_id, const std::string& message) {
       return;
     }
     webrtc::SdpParseError error;
-    rtc::scoped_ptr<webrtc::IceCandidateInterface> candidate(
+    std::unique_ptr<webrtc::IceCandidateInterface> candidate(
         webrtc::CreateIceCandidate(sdp_mid, sdp_mlineindex, sdp, &error));
     if (!candidate.get()) {
       LOG(WARNING) << "Can't parse received candidate message. "
@@ -357,8 +349,8 @@ void Conductor::DisconnectFromServer() {
 }
 
 void Conductor::ConnectToPeer(int peer_id) {
-  ASSERT(peer_id_ == -1);
-  ASSERT(peer_id != -1);
+  RTC_DCHECK(peer_id_ == -1);
+  RTC_DCHECK(peer_id != -1);
 
   if (peer_connection_.get()) {
     main_wnd_->MessageBox("Error",
@@ -374,24 +366,32 @@ void Conductor::ConnectToPeer(int peer_id) {
   }
 }
 
-cricket::VideoCapturer* Conductor::OpenVideoCaptureDevice() {
-  rtc::scoped_ptr<cricket::DeviceManagerInterface> dev_manager(
-      cricket::DeviceManagerFactory::Create());
-  if (!dev_manager->Init()) {
-    LOG(LS_ERROR) << "Can't create device manager";
-    return NULL;
+std::unique_ptr<cricket::VideoCapturer> Conductor::OpenVideoCaptureDevice() {
+  std::vector<std::string> device_names;
+  {
+    std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo> info(
+        webrtc::VideoCaptureFactory::CreateDeviceInfo());
+    if (!info) {
+      return nullptr;
+    }
+    int num_devices = info->NumberOfDevices();
+    for (int i = 0; i < num_devices; ++i) {
+      const uint32_t kSize = 256;
+      char name[kSize] = {0};
+      char id[kSize] = {0};
+      if (info->GetDeviceName(i, name, kSize, id, kSize) != -1) {
+        device_names.push_back(name);
+      }
+    }
   }
-  std::vector<cricket::Device> devs;
-  if (!dev_manager->GetVideoCaptureDevices(&devs)) {
-    LOG(LS_ERROR) << "Can't enumerate video devices";
-    return NULL;
-  }
-  std::vector<cricket::Device>::iterator dev_it = devs.begin();
-  cricket::VideoCapturer* capturer = NULL;
-  for (; dev_it != devs.end(); ++dev_it) {
-    capturer = dev_manager->CreateVideoCapturer(*dev_it);
-    if (capturer != NULL)
+
+  cricket::WebRtcVideoDeviceCapturerFactory factory;
+  std::unique_ptr<cricket::VideoCapturer> capturer;
+  for (const auto& name : device_names) {
+    capturer = factory.Create(cricket::Device(name, 0));
+    if (capturer) {
       break;
+    }
   }
   return capturer;
 }
@@ -443,7 +443,7 @@ void Conductor::UIThreadCallback(int msg_id, void* data) {
       LOG(INFO) << "PEER_CONNECTION_CLOSED";
       DeletePeerConnection();
 
-      ASSERT(active_streams_.empty());
+      RTC_DCHECK(active_streams_.empty());
 
       if (main_wnd_->IsWindow()) {
         if (client_->is_connected()) {
@@ -507,7 +507,7 @@ void Conductor::UIThreadCallback(int msg_id, void* data) {
     }
 
     default:
-      ASSERT(false);
+      RTC_NOTREACHED();
       break;
   }
 }

@@ -13,8 +13,6 @@
 #include <assert.h>
 #include <algorithm>
 
-#include "webrtc/system_wrappers/interface/logging.h"
-
 namespace webrtc {
 
 ScreenCapturerHelper::ScreenCapturerHelper()

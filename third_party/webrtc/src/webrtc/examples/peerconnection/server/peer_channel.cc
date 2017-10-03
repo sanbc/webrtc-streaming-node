@@ -18,6 +18,7 @@
 
 #include "webrtc/examples/peerconnection/server/data_socket.h"
 #include "webrtc/examples/peerconnection/server/utils.h"
+#include "webrtc/base/stringencode.h"
 #include "webrtc/base/stringutils.h"
 
 using rtc::sprintfn;
@@ -59,7 +60,7 @@ ChannelMember::ChannelMember(DataSocket* socket)
   assert(socket);
   assert(socket->method() == DataSocket::GET);
   assert(socket->PathEquals("/sign_in"));
-  name_ = socket->request_arguments();  // TODO: urldecode
+  name_ = rtc::s_url_decode(socket->request_arguments());
   if (name_.empty())
     name_ = "peer_" + int2str(id_);
   else if (name_.length() > kMaxNameLength)

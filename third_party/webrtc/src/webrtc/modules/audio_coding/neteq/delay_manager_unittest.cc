@@ -14,9 +14,9 @@
 
 #include <math.h>
 
-#include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gtest/include/gtest/gtest.h"
 #include "webrtc/modules/audio_coding/neteq/mock/mock_delay_peak_detector.h"
+#include "webrtc/test/gmock.h"
+#include "webrtc/test/gtest.h"
 
 namespace webrtc {
 
@@ -39,21 +39,19 @@ class DelayManagerTest : public ::testing::Test {
   void IncreaseTime(int inc_ms);
 
   DelayManager* dm_;
+  TickTimer tick_timer_;
   MockDelayPeakDetector detector_;
   uint16_t seq_no_;
   uint32_t ts_;
 };
 
 DelayManagerTest::DelayManagerTest()
-    : dm_(NULL),
-      seq_no_(0x1234),
-      ts_(0x12345678) {
-}
+    : dm_(NULL), detector_(&tick_timer_), seq_no_(0x1234), ts_(0x12345678) {}
 
 void DelayManagerTest::SetUp() {
   EXPECT_CALL(detector_, Reset())
             .Times(1);
-  dm_ = new DelayManager(kMaxNumberOfPackets, &detector_);
+  dm_ = new DelayManager(kMaxNumberOfPackets, &detector_, &tick_timer_);
 }
 
 void DelayManagerTest::SetPacketAudioLength(int lengt_ms) {
@@ -69,9 +67,7 @@ void DelayManagerTest::InsertNextPacket() {
 
 void DelayManagerTest::IncreaseTime(int inc_ms) {
   for (int t = 0; t < inc_ms; t += kTimeStepMs) {
-    EXPECT_CALL(detector_, IncrementCounter(kTimeStepMs))
-        .Times(1);
-    dm_->UpdateCounters(kTimeStepMs);
+    tick_timer_.Increment();
   }
 }
 void DelayManagerTest::TearDown() {
@@ -113,13 +109,6 @@ TEST_F(DelayManagerTest, PeakFound) {
       .WillOnce(Return(false));
   EXPECT_TRUE(dm_->PeakFound());
   EXPECT_FALSE(dm_->PeakFound());
-}
-
-TEST_F(DelayManagerTest, UpdateCounters) {
-  // Expect DelayManager to pass on the counter update to the detector.
-  EXPECT_CALL(detector_, IncrementCounter(kTimeStepMs))
-      .Times(1);
-  dm_->UpdateCounters(kTimeStepMs);
 }
 
 TEST_F(DelayManagerTest, UpdateNormal) {
@@ -275,6 +264,58 @@ TEST_F(DelayManagerTest, MinAndRequiredDelay) {
   InsertNextPacket();
   EXPECT_EQ(kExpectedTarget * kFrameSizeMs, dm_->least_required_delay_ms());
   EXPECT_EQ(kMinDelayPackets << 8, dm_->TargetLevel());
+}
+
+// Tests that skipped sequence numbers (simulating empty packets) are handled
+// correctly.
+TEST_F(DelayManagerTest, EmptyPacketsReported) {
+  SetPacketAudioLength(kFrameSizeMs);
+  // First packet arrival.
+  InsertNextPacket();
+
+  // Advance time by one frame size.
+  IncreaseTime(kFrameSizeMs);
+
+  // Advance the sequence number by 5, simulating that 5 empty packets were
+  // received, but never inserted.
+  seq_no_ += 10;
+  for (int j = 0; j < 10; ++j) {
+    dm_->RegisterEmptyPacket();
+  }
+
+  // Second packet arrival.
+  // Expect detector update method to be called once with inter-arrival time
+  // equal to 1 packet, and (base) target level equal to 1 as well.
+  // Return false to indicate no peaks found.
+  EXPECT_CALL(detector_, Update(1, 1)).WillOnce(Return(false));
+  InsertNextPacket();
+
+  EXPECT_EQ(1 << 8, dm_->TargetLevel());  // In Q8.
+}
+
+// Same as above, but do not call RegisterEmptyPacket. Observe the target level
+// increase dramatically.
+TEST_F(DelayManagerTest, EmptyPacketsNotReported) {
+  SetPacketAudioLength(kFrameSizeMs);
+  // First packet arrival.
+  InsertNextPacket();
+
+  // Advance time by one frame size.
+  IncreaseTime(kFrameSizeMs);
+
+  // Advance the sequence number by 5, simulating that 5 empty packets were
+  // received, but never inserted.
+  seq_no_ += 10;
+
+  // Second packet arrival.
+  // Expect detector update method to be called once with inter-arrival time
+  // equal to 1 packet, and (base) target level equal to 1 as well.
+  // Return false to indicate no peaks found.
+  EXPECT_CALL(detector_, Update(10, 10)).WillOnce(Return(false));
+  InsertNextPacket();
+
+  // Note 10 times higher target value.
+  EXPECT_EQ(10 * 1 << 8, dm_->TargetLevel());  // In Q8.
 }
 
 TEST_F(DelayManagerTest, Failures) {

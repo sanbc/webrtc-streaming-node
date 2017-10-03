@@ -124,6 +124,15 @@ inline bool IsBlockingError(int e) {
   return (e == EWOULDBLOCK) || (e == EAGAIN) || (e == EINPROGRESS);
 }
 
+struct SentPacket {
+  SentPacket() : packet_id(-1), send_time_ms(-1) {}
+  SentPacket(int packet_id, int64_t send_time_ms)
+      : packet_id(packet_id), send_time_ms(send_time_ms) {}
+
+  int packet_id;
+  int64_t send_time_ms;
+};
+
 // General interface for the socket implementations of various networks.  The
 // methods match those of normal UNIX sockets very closely.
 class Socket {
@@ -142,8 +151,12 @@ class Socket {
   virtual int Connect(const SocketAddress& addr) = 0;
   virtual int Send(const void *pv, size_t cb) = 0;
   virtual int SendTo(const void *pv, size_t cb, const SocketAddress& addr) = 0;
-  virtual int Recv(void *pv, size_t cb) = 0;
-  virtual int RecvFrom(void *pv, size_t cb, SocketAddress *paddr) = 0;
+  // |timestamp| is in units of microseconds.
+  virtual int Recv(void* pv, size_t cb, int64_t* timestamp) = 0;
+  virtual int RecvFrom(void* pv,
+                       size_t cb,
+                       SocketAddress* paddr,
+                       int64_t* timestamp) = 0;
   virtual int Listen(int backlog) = 0;
   virtual Socket *Accept(SocketAddress *paddr) = 0;
   virtual int Close() = 0;
@@ -157,11 +170,6 @@ class Socket {
     CS_CONNECTED
   };
   virtual ConnState GetState() const = 0;
-
-  // Fills in the given uint16 with the current estimate of the MTU along the
-  // path to the address to which this socket is connected. NOTE: This method
-  // can block for up to 10 seconds on Windows.
-  virtual int EstimateMTU(uint16* mtu) = 0;
 
   enum Option {
     OPT_DONTFRAGMENT,

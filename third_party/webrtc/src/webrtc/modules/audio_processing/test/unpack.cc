@@ -15,12 +15,18 @@
 
 #include <stdio.h>
 
+#include <memory>
+
 #include "gflags/gflags.h"
-#include "webrtc/audio_processing/debug.pb.h"
-#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/base/format_macros.h"
+#include "webrtc/base/ignore_wundef.h"
 #include "webrtc/modules/audio_processing/test/protobuf_utils.h"
 #include "webrtc/modules/audio_processing/test/test_utils.h"
 #include "webrtc/typedefs.h"
+
+RTC_PUSH_IGNORING_WUNDEF()
+#include "webrtc/modules/audio_processing/debug.pb.h"
+RTC_POP_IGNORING_WUNDEF()
 
 // TODO(andrew): unpack more of the data.
 DEFINE_string(input_file, "input", "The name of the input stream file.");
@@ -76,18 +82,18 @@ int do_main(int argc, char* argv[]) {
 
   Event event_msg;
   int frame_count = 0;
-  int reverse_samples_per_channel = 0;
-  int input_samples_per_channel = 0;
-  int output_samples_per_channel = 0;
-  int num_reverse_channels = 0;
-  int num_input_channels = 0;
-  int num_output_channels = 0;
-  rtc::scoped_ptr<WavWriter> reverse_wav_file;
-  rtc::scoped_ptr<WavWriter> input_wav_file;
-  rtc::scoped_ptr<WavWriter> output_wav_file;
-  rtc::scoped_ptr<RawFile> reverse_raw_file;
-  rtc::scoped_ptr<RawFile> input_raw_file;
-  rtc::scoped_ptr<RawFile> output_raw_file;
+  size_t reverse_samples_per_channel = 0;
+  size_t input_samples_per_channel = 0;
+  size_t output_samples_per_channel = 0;
+  size_t num_reverse_channels = 0;
+  size_t num_input_channels = 0;
+  size_t num_output_channels = 0;
+  std::unique_ptr<WavWriter> reverse_wav_file;
+  std::unique_ptr<WavWriter> input_wav_file;
+  std::unique_ptr<WavWriter> output_wav_file;
+  std::unique_ptr<RawFile> reverse_raw_file;
+  std::unique_ptr<RawFile> input_raw_file;
+  std::unique_ptr<RawFile> output_raw_file;
 
   FILE* settings_file = OpenFile(FLAGS_settings_file, "wb");
 
@@ -115,9 +121,9 @@ int do_main(int argc, char* argv[]) {
         if (FLAGS_raw && !reverse_raw_file) {
           reverse_raw_file.reset(new RawFile(FLAGS_reverse_file + ".float"));
         }
-        rtc::scoped_ptr<const float* []> data(
+        std::unique_ptr<const float* []> data(
             new const float* [num_reverse_channels]);
-        for (int i = 0; i < num_reverse_channels; ++i) {
+        for (size_t i = 0; i < num_reverse_channels; ++i) {
           data[i] = reinterpret_cast<const float*>(msg.channel(i).data());
         }
         WriteFloatData(data.get(),
@@ -146,9 +152,9 @@ int do_main(int argc, char* argv[]) {
         if (FLAGS_raw && !input_raw_file) {
           input_raw_file.reset(new RawFile(FLAGS_input_file + ".float"));
         }
-        rtc::scoped_ptr<const float* []> data(
+        std::unique_ptr<const float* []> data(
             new const float* [num_input_channels]);
-        for (int i = 0; i < num_input_channels; ++i) {
+        for (size_t i = 0; i < num_input_channels; ++i) {
           data[i] = reinterpret_cast<const float*>(msg.input_channel(i).data());
         }
         WriteFloatData(data.get(),
@@ -170,9 +176,9 @@ int do_main(int argc, char* argv[]) {
         if (FLAGS_raw && !output_raw_file) {
           output_raw_file.reset(new RawFile(FLAGS_output_file + ".float"));
         }
-        rtc::scoped_ptr<const float* []> data(
+        std::unique_ptr<const float* []> data(
             new const float* [num_output_channels]);
-        for (int i = 0; i < num_output_channels; ++i) {
+        for (size_t i = 0; i < num_output_channels; ++i) {
           data[i] =
               reinterpret_cast<const float*>(msg.output_channel(i).data());
         }
@@ -250,6 +256,11 @@ int do_main(int argc, char* argv[]) {
       PRINT_CONFIG(ns_enabled);
       PRINT_CONFIG(ns_level);
       PRINT_CONFIG(transient_suppression_enabled);
+      PRINT_CONFIG(intelligibility_enhancer_enabled);
+      if (msg.has_experiments_description()) {
+        fprintf(settings_file, "  experiments_description: %s\n",
+                msg.experiments_description().c_str());
+      }
     } else if (event_msg.type() == Event::INIT) {
       if (!event_msg.has_init()) {
         printf("Corrupt input file: Init missing.\n");
@@ -268,11 +279,14 @@ int do_main(int argc, char* argv[]) {
               "  Reverse sample rate: %d\n",
               reverse_sample_rate);
       num_input_channels = msg.num_input_channels();
-      fprintf(settings_file, "  Input channels: %d\n", num_input_channels);
+      fprintf(settings_file, "  Input channels: %" PRIuS "\n",
+              num_input_channels);
       num_output_channels = msg.num_output_channels();
-      fprintf(settings_file, "  Output channels: %d\n", num_output_channels);
+      fprintf(settings_file, "  Output channels: %" PRIuS "\n",
+              num_output_channels);
       num_reverse_channels = msg.num_reverse_channels();
-      fprintf(settings_file, "  Reverse channels: %d\n", num_reverse_channels);
+      fprintf(settings_file, "  Reverse channels: %" PRIuS "\n",
+              num_reverse_channels);
 
       fprintf(settings_file, "\n");
 
@@ -283,20 +297,29 @@ int do_main(int argc, char* argv[]) {
         output_sample_rate = input_sample_rate;
       }
 
-      reverse_samples_per_channel = reverse_sample_rate / 100;
-      input_samples_per_channel = input_sample_rate / 100;
-      output_samples_per_channel = output_sample_rate / 100;
+      reverse_samples_per_channel =
+          static_cast<size_t>(reverse_sample_rate / 100);
+      input_samples_per_channel =
+          static_cast<size_t>(input_sample_rate / 100);
+      output_samples_per_channel =
+          static_cast<size_t>(output_sample_rate / 100);
 
       if (!FLAGS_raw) {
         // The WAV files need to be reset every time, because they cant change
         // their sample rate or number of channels.
-        reverse_wav_file.reset(new WavWriter(FLAGS_reverse_file + ".wav",
+        std::stringstream reverse_name;
+        reverse_name << FLAGS_reverse_file << frame_count << ".wav";
+        reverse_wav_file.reset(new WavWriter(reverse_name.str(),
                                              reverse_sample_rate,
                                              num_reverse_channels));
-        input_wav_file.reset(new WavWriter(FLAGS_input_file + ".wav",
+        std::stringstream input_name;
+        input_name << FLAGS_input_file << frame_count << ".wav";
+        input_wav_file.reset(new WavWriter(input_name.str(),
                                            input_sample_rate,
                                            num_input_channels));
-        output_wav_file.reset(new WavWriter(FLAGS_output_file + ".wav",
+        std::stringstream output_name;
+        output_name << FLAGS_output_file << frame_count << ".wav";
+        output_wav_file.reset(new WavWriter(output_name.str(),
                                             output_sample_rate,
                                             num_output_channels));
       }

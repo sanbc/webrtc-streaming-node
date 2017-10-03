@@ -12,9 +12,7 @@
 
 #include "webrtc/base/checks.h"
 #include "webrtc/base/format_macros.h"
-#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
-#include "webrtc/system_wrappers/interface/logging.h"
-#include "webrtc/system_wrappers/interface/trace.h"
+#include "webrtc/base/logging.h"
 #include "webrtc/voice_engine/channel.h"
 #include "webrtc/voice_engine/include/voe_errors.h"
 #include "webrtc/voice_engine/voice_engine_impl.h"
@@ -44,7 +42,7 @@ int VoENetworkImpl::RegisterExternalTransport(int channel,
     LOG_F(LS_ERROR) << "Failed to locate channel: " << channel;
     return -1;
   }
-  return channelPtr->RegisterExternalTransport(transport);
+  return channelPtr->RegisterExternalTransport(&transport);
 }
 
 int VoENetworkImpl::DeRegisterExternalTransport(int channel) {
@@ -85,8 +83,8 @@ int VoENetworkImpl::ReceivedRTPPacket(int channel,
     LOG_F(LS_ERROR) << "No external transport for channel: " << channel;
     return -1;
   }
-  return channelPtr->ReceivedRTPPacket((const int8_t*)data, length,
-                                       packet_time);
+  return channelPtr->ReceivedRTPPacket(static_cast<const uint8_t*>(data),
+                                       length, packet_time);
 }
 
 int VoENetworkImpl::ReceivedRTCPPacket(int channel,
@@ -108,7 +106,8 @@ int VoENetworkImpl::ReceivedRTCPPacket(int channel,
     LOG_F(LS_ERROR) << "No external transport for channel: " << channel;
     return -1;
   }
-  return channelPtr->ReceivedRTCPPacket((const int8_t*)data, length);
+  return channelPtr->ReceivedRTCPPacket(static_cast<const uint8_t*>(data),
+                                        length);
 }
 
 }  // namespace webrtc

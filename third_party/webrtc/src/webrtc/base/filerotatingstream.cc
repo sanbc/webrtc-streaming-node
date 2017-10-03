@@ -37,8 +37,8 @@ FileRotatingStream::FileRotatingStream(const std::string& dir_path,
                          max_file_size,
                          num_files,
                          kWrite) {
-  RTC_DCHECK_GT(max_file_size, 0u);
-  RTC_DCHECK_GT(num_files, 1u);
+  RTC_DCHECK_GT(max_file_size, 0);
+  RTC_DCHECK_GT(num_files, 1);
 }
 
 FileRotatingStream::FileRotatingStream(const std::string& dir_path,
@@ -248,7 +248,7 @@ bool FileRotatingStream::OpenCurrentFile() {
     case kWrite:
       mode = "w+";
       // We should always we writing to the zero-th file.
-      RTC_DCHECK_EQ(current_file_index_, 0u);
+      RTC_DCHECK_EQ(current_file_index_, 0);
       break;
     case kRead:
       mode = "r";
@@ -281,7 +281,7 @@ void FileRotatingStream::RotateFiles() {
   // Rotates the files by deleting the file at |rotation_index_|, which is the
   // oldest file and then renaming the newer files to have an incremented index.
   // See header file comments for example.
-  RTC_DCHECK_LE(rotation_index_, file_names_.size());
+  RTC_DCHECK_LT(rotation_index_, file_names_.size());
   std::string file_to_delete = file_names_[rotation_index_];
   if (Filesystem::IsFile(file_to_delete)) {
     if (!Filesystem::DeleteFile(file_to_delete)) {
@@ -360,7 +360,7 @@ CallSessionFileRotatingStream::CallSessionFileRotatingStream(
                          GetNumRotatingLogFiles(max_total_log_size) + 1),
       max_total_log_size_(max_total_log_size),
       num_rotations_(0) {
-  RTC_DCHECK_GE(max_total_log_size, 4u);
+  RTC_DCHECK_GE(max_total_log_size, 4);
 }
 
 const char* CallSessionFileRotatingStream::kLogPrefix = "webrtc_log";

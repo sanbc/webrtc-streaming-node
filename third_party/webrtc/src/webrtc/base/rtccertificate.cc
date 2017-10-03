@@ -8,15 +8,16 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
+
 #include "webrtc/base/rtccertificate.h"
 
 #include "webrtc/base/checks.h"
-#include "webrtc/base/timeutils.h"
 
 namespace rtc {
 
 scoped_refptr<RTCCertificate> RTCCertificate::Create(
-    scoped_ptr<SSLIdentity> identity) {
+    std::unique_ptr<SSLIdentity> identity) {
   return new RefCountedObject<RTCCertificate>(identity.release());
 }
 
@@ -28,17 +29,42 @@ RTCCertificate::RTCCertificate(SSLIdentity* identity)
 RTCCertificate::~RTCCertificate() {
 }
 
-uint64 RTCCertificate::expires_timestamp_ns() const {
-  // TODO(hbos): Update once SSLIdentity/SSLCertificate supports expires field.
-  return 0;
+uint64_t RTCCertificate::Expires() const {
+  int64_t expires = ssl_certificate().CertificateExpirationTime();
+  if (expires != -1)
+    return static_cast<uint64_t>(expires) * kNumMillisecsPerSec;
+  // If the expiration time could not be retrieved return an expired timestamp.
+  return 0;  // = 1970-01-01
 }
 
-bool RTCCertificate::HasExpired() const {
-  return expires_timestamp_ns() <= TimeNanos();
+bool RTCCertificate::HasExpired(uint64_t now) const {
+  return Expires() <= now;
 }
 
 const SSLCertificate& RTCCertificate::ssl_certificate() const {
   return identity_->certificate();
+}
+
+RTCCertificatePEM RTCCertificate::ToPEM() const {
+  return RTCCertificatePEM(identity_->PrivateKeyToPEMString(),
+                           ssl_certificate().ToPEMString());
+}
+
+scoped_refptr<RTCCertificate> RTCCertificate::FromPEM(
+    const RTCCertificatePEM& pem) {
+  std::unique_ptr<SSLIdentity> identity(SSLIdentity::FromPEMStrings(
+      pem.private_key(), pem.certificate()));
+  if (!identity)
+    return nullptr;
+  return new RefCountedObject<RTCCertificate>(identity.release());
+}
+
+bool RTCCertificate::operator==(const RTCCertificate& certificate) const {
+  return *this->identity_ == *certificate.identity_;
+}
+
+bool RTCCertificate::operator!=(const RTCCertificate& certificate) const {
+  return !(*this == certificate);
 }
 
 }  // namespace rtc

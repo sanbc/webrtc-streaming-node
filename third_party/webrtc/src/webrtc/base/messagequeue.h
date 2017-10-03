@@ -15,18 +15,21 @@
 
 #include <algorithm>
 #include <list>
+#include <memory>
 #include <queue>
+#include <utility>
 #include <vector>
 
 #include "webrtc/base/basictypes.h"
 #include "webrtc/base/constructormagic.h"
 #include "webrtc/base/criticalsection.h"
+#include "webrtc/base/location.h"
 #include "webrtc/base/messagehandler.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/base/scoped_ref_ptr.h"
 #include "webrtc/base/sigslot.h"
 #include "webrtc/base/socketserver.h"
 #include "webrtc/base/timeutils.h"
+#include "webrtc/base/thread_annotations.h"
 
 namespace rtc {
 
@@ -47,6 +50,11 @@ class MessageQueueManager {
   // MessageQueueManager instance when necessary.
   static bool IsInitialized();
 
+  // Mainly for testing purposes, for use with a simulated clock.
+  // Ensures that all message queues have processed delayed messages
+  // up until the current point in time.
+  static void ProcessAllMessageQueues();
+
  private:
   static MessageQueueManager* Instance();
 
@@ -56,11 +64,15 @@ class MessageQueueManager {
   void AddInternal(MessageQueue *message_queue);
   void RemoveInternal(MessageQueue *message_queue);
   void ClearInternal(MessageHandler *handler);
+  void ProcessAllMessageQueuesInternal();
 
   static MessageQueueManager* instance_;
   // This list contains all live MessageQueues.
-  std::vector<MessageQueue *> message_queues_;
+  std::vector<MessageQueue*> message_queues_ GUARDED_BY(crit_);
+
+  // Acquire this with DebugNonReentrantCritScope.
   CriticalSection crit_;
+  bool locked_ GUARDED_BY(crit_);
 };
 
 // Derive from this for specialized data
@@ -86,11 +98,23 @@ class TypedMessageData : public MessageData {
 template <class T>
 class ScopedMessageData : public MessageData {
  public:
-  explicit ScopedMessageData(T* data) : data_(data) { }
-  const scoped_ptr<T>& data() const { return data_; }
-  scoped_ptr<T>& data() { return data_; }
+  explicit ScopedMessageData(std::unique_ptr<T> data)
+      : data_(std::move(data)) {}
+  // Deprecated.
+  // TODO(deadbeef): Remove this once downstream applications stop using it.
+  explicit ScopedMessageData(T* data) : data_(data) {}
+  // Deprecated.
+  // TODO(deadbeef): Returning a reference to a unique ptr? Why. Get rid of
+  // this once downstream applications stop using it, then rename inner_data to
+  // just data.
+  const std::unique_ptr<T>& data() const { return data_; }
+  std::unique_ptr<T>& data() { return data_; }
+
+  const T& inner_data() const { return *data_; }
+  T& inner_data() { return *data_; }
+
  private:
-  scoped_ptr<T> data_;
+  std::unique_ptr<T> data_;
 };
 
 // Like ScopedMessageData, but for reference counted pointers.
@@ -123,23 +147,23 @@ class DisposeData : public MessageData {
   T* data_;
 };
 
-const uint32 MQID_ANY = static_cast<uint32>(-1);
-const uint32 MQID_DISPOSE = static_cast<uint32>(-2);
+const uint32_t MQID_ANY = static_cast<uint32_t>(-1);
+const uint32_t MQID_DISPOSE = static_cast<uint32_t>(-2);
 
 // No destructor
 
 struct Message {
-  Message() {
-    memset(this, 0, sizeof(*this));
+  Message()
+      : phandler(nullptr), message_id(0), pdata(nullptr), ts_sensitive(0) {}
+  inline bool Match(MessageHandler* handler, uint32_t id) const {
+    return (handler == nullptr || handler == phandler) &&
+           (id == MQID_ANY || id == message_id);
   }
-  inline bool Match(MessageHandler* handler, uint32 id) const {
-    return (handler == NULL || handler == phandler)
-           && (id == MQID_ANY || id == message_id);
-  }
+  Location posted_from;
   MessageHandler *phandler;
-  uint32 message_id;
+  uint32_t message_id;
   MessageData *pdata;
-  uint32 ts_sensitive;
+  int64_t ts_sensitive;
 };
 
 typedef std::list<Message> MessageList;
@@ -149,17 +173,20 @@ typedef std::list<Message> MessageList;
 
 class DelayedMessage {
  public:
-  DelayedMessage(int delay, uint32 trigger, uint32 num, const Message& msg)
-  : cmsDelay_(delay), msTrigger_(trigger), num_(num), msg_(msg) { }
+  DelayedMessage(int64_t delay,
+                 int64_t trigger,
+                 uint32_t num,
+                 const Message& msg)
+      : cmsDelay_(delay), msTrigger_(trigger), num_(num), msg_(msg) {}
 
   bool operator< (const DelayedMessage& dmsg) const {
     return (dmsg.msTrigger_ < msTrigger_)
            || ((dmsg.msTrigger_ == msTrigger_) && (dmsg.num_ < num_));
   }
 
-  int cmsDelay_;  // for debugging
-  uint32 msTrigger_;
-  uint32 num_;
+  int64_t cmsDelay_;  // for debugging
+  int64_t msTrigger_;
+  uint32_t num_;
   Message msg_;
 };
 
@@ -167,11 +194,21 @@ class MessageQueue {
  public:
   static const int kForever = -1;
 
-  explicit MessageQueue(SocketServer* ss = NULL);
+  // Create a new MessageQueue and optionally assign it to the passed
+  // SocketServer. Subclasses that override Clear should pass false for
+  // init_queue and call DoInit() from their constructor to prevent races
+  // with the MessageQueueManager using the object while the vtable is still
+  // being created.
+  MessageQueue(SocketServer* ss, bool init_queue);
+  MessageQueue(std::unique_ptr<SocketServer> ss, bool init_queue);
+
+  // NOTE: SUBCLASSES OF MessageQueue THAT OVERRIDE Clear MUST CALL
+  // DoDestroy() IN THEIR DESTRUCTORS! This is required to avoid a data race
+  // between the destructor modifying the vtable, and the MessageQueueManager
+  // calling Clear on the object from a different thread.
   virtual ~MessageQueue();
 
-  SocketServer* socketserver() { return ss_; }
-  void set_socketserver(SocketServer* ss);
+  SocketServer* socketserver();
 
   // Note: The behavior of MessageQueue has changed.  When a MQ is stopped,
   // futher Posts and Sends will fail.  However, any pending Sends and *ready*
@@ -182,6 +219,10 @@ class MessageQueue {
   virtual void Quit();
   virtual bool IsQuitting();
   virtual void Restart();
+  // Not all message queues actually process messages (such as SignalThread).
+  // In those cases, it's important to know, before posting, that it won't be
+  // Processed.  Normally, this would be true until IsQuitting() is true.
+  virtual bool IsProcessingMessages();
 
   // Get() will process I/O until:
   //  1) A message is available (returns true)
@@ -190,18 +231,30 @@ class MessageQueue {
   virtual bool Get(Message *pmsg, int cmsWait = kForever,
                    bool process_io = true);
   virtual bool Peek(Message *pmsg, int cmsWait = 0);
-  virtual void Post(MessageHandler *phandler, uint32 id = 0,
-                    MessageData *pdata = NULL, bool time_sensitive = false);
-  virtual void PostDelayed(int cmsDelay,
+  virtual void Post(const Location& posted_from,
+                    MessageHandler* phandler,
+                    uint32_t id = 0,
+                    MessageData* pdata = nullptr,
+                    bool time_sensitive = false);
+  virtual void PostDelayed(const Location& posted_from,
+                           int cmsDelay,
                            MessageHandler* phandler,
-                           uint32 id = 0,
-                           MessageData* pdata = NULL);
-  virtual void PostAt(uint32 tstamp,
+                           uint32_t id = 0,
+                           MessageData* pdata = nullptr);
+  virtual void PostAt(const Location& posted_from,
+                      int64_t tstamp,
                       MessageHandler* phandler,
-                      uint32 id = 0,
-                      MessageData* pdata = NULL);
-  virtual void Clear(MessageHandler *phandler, uint32 id = MQID_ANY,
-                     MessageList* removed = NULL);
+                      uint32_t id = 0,
+                      MessageData* pdata = nullptr);
+  // TODO(honghaiz): Remove this when all the dependencies are removed.
+  virtual void PostAt(const Location& posted_from,
+                      uint32_t tstamp,
+                      MessageHandler* phandler,
+                      uint32_t id = 0,
+                      MessageData* pdata = nullptr);
+  virtual void Clear(MessageHandler* phandler,
+                     uint32_t id = MQID_ANY,
+                     MessageList* removed = nullptr);
   virtual void Dispatch(Message *pmsg);
   virtual void ReceiveSends();
 
@@ -217,7 +270,7 @@ class MessageQueue {
   // Internally posts a message which causes the doomed object to be deleted
   template<class T> void Dispose(T* doomed) {
     if (doomed) {
-      Post(NULL, MQID_DISPOSE, new DisposeData<T>(doomed));
+      Post(RTC_FROM_HERE, nullptr, MQID_DISPOSE, new DisposeData<T>(doomed));
     }
   }
 
@@ -232,23 +285,41 @@ class MessageQueue {
     void reheap() { make_heap(c.begin(), c.end(), comp); }
   };
 
-  void DoDelayPost(int cmsDelay, uint32 tstamp, MessageHandler *phandler,
-                   uint32 id, MessageData* pdata);
+  void DoDelayPost(const Location& posted_from,
+                   int64_t cmsDelay,
+                   int64_t tstamp,
+                   MessageHandler* phandler,
+                   uint32_t id,
+                   MessageData* pdata);
 
-  // The SocketServer is not owned by MessageQueue.
-  SocketServer* ss_;
-  // If a server isn't supplied in the constructor, use this one.
-  scoped_ptr<SocketServer> default_ss_;
-  bool fStop_;
+  // Perform initialization, subclasses must call this from their constructor
+  // if false was passed as init_queue to the MessageQueue constructor.
+  void DoInit();
+
+  // Perform cleanup, subclasses that override Clear must call this from the
+  // destructor.
+  void DoDestroy();
+
+  void WakeUpSocketServer();
+
   bool fPeekKeep_;
   Message msgPeek_;
-  MessageList msgq_;
-  PriorityQueue dmsgq_;
-  uint32 dmsgq_next_num_;
-  mutable CriticalSection crit_;
+  MessageList msgq_ GUARDED_BY(crit_);
+  PriorityQueue dmsgq_ GUARDED_BY(crit_);
+  uint32_t dmsgq_next_num_ GUARDED_BY(crit_);
+  CriticalSection crit_;
+  bool fInitialized_;
+  bool fDestroyed_;
 
  private:
-  RTC_DISALLOW_COPY_AND_ASSIGN(MessageQueue);
+  volatile int stop_;
+
+  // The SocketServer might not be owned by MessageQueue.
+  SocketServer* const ss_;
+  // Used if SocketServer ownership lies with |this|.
+  std::unique_ptr<SocketServer> own_ss_;
+
+  RTC_DISALLOW_IMPLICIT_CONSTRUCTORS(MessageQueue);
 };
 
 }  // namespace rtc

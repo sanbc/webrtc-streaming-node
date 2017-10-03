@@ -24,14 +24,9 @@ PacketManipulatorImpl::PacketManipulatorImpl(PacketReader* packet_reader,
     : packet_reader_(packet_reader),
       config_(config),
       active_burst_packets_(0),
-      critsect_(CriticalSectionWrapper::CreateCriticalSection()),
       random_seed_(1),
       verbose_(verbose) {
   assert(packet_reader);
-}
-
-PacketManipulatorImpl::~PacketManipulatorImpl() {
-  delete critsect_;
 }
 
 int PacketManipulatorImpl::ManipulatePackets(
@@ -57,7 +52,7 @@ int PacketManipulatorImpl::ManipulatePackets(
       active_burst_packets_--;
       nbr_packets_dropped++;
     } else if (RandomUniform() < config_.packet_loss_probability ||
-        packet_loss_has_occurred) {
+               packet_loss_has_occurred) {
       packet_loss_has_occurred = true;
       nbr_packets_dropped++;
       if (config_.packet_loss_mode == kBurst) {
@@ -89,11 +84,11 @@ inline double PacketManipulatorImpl::RandomUniform() {
   // Use the previous result as new seed before each rand() call. Doing this
   // it doesn't matter if other threads are calling rand() since we'll always
   // get the same behavior as long as we're using a fixed initial seed.
-  critsect_->Enter();
+  critsect_.Enter();
   srand(random_seed_);
-  random_seed_ = rand();
-  critsect_->Leave();
-  return (random_seed_ + 1.0)/(RAND_MAX + 1.0);
+  random_seed_ = rand();  // NOLINT (rand_r instead of rand)
+  critsect_.Leave();
+  return (random_seed_ + 1.0) / (RAND_MAX + 1.0);
 }
 
 const char* PacketLossModeToStr(PacketLossMode e) {
@@ -109,4 +104,4 @@ const char* PacketLossModeToStr(PacketLossMode e) {
 }
 
 }  // namespace test
-}  // namespace webrtcc
+}  // namespace webrtc

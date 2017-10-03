@@ -16,7 +16,7 @@
 #include "vpx/vpx_frame_buffer.h"
 
 #include "webrtc/base/checks.h"
-#include "webrtc/system_wrappers/interface/logging.h"
+#include "webrtc/base/logging.h"
 
 namespace webrtc {
 
@@ -53,7 +53,7 @@ bool Vp9FrameBufferPool::InitializeVpxUsePool(
 
 rtc::scoped_refptr<Vp9FrameBufferPool::Vp9FrameBuffer>
 Vp9FrameBufferPool::GetFrameBuffer(size_t min_size) {
-  RTC_DCHECK_GT(min_size, 0u);
+  RTC_DCHECK_GT(min_size, 0);
   rtc::scoped_refptr<Vp9FrameBuffer> available_buffer = nullptr;
   {
     rtc::CritScope cs(&buffers_lock_);
@@ -73,7 +73,10 @@ Vp9FrameBufferPool::GetFrameBuffer(size_t min_size) {
             << allocated_buffers_.size() << " Vp9FrameBuffers have been "
             << "allocated by a Vp9FrameBufferPool (exceeding what is "
             << "considered reasonable, " << max_num_buffers_ << ").";
-        RTC_NOTREACHED();
+
+        // TODO(phoglund): this limit is being hit in tests since Oct 5 2016.
+        // See https://bugs.chromium.org/p/webrtc/issues/detail?id=6484.
+        // RTC_NOTREACHED();
       }
     }
   }
@@ -98,9 +101,9 @@ void Vp9FrameBufferPool::ClearPool() {
 }
 
 // static
-int32 Vp9FrameBufferPool::VpxGetFrameBuffer(void* user_priv,
-                                            size_t min_size,
-                                            vpx_codec_frame_buffer* fb) {
+int32_t Vp9FrameBufferPool::VpxGetFrameBuffer(void* user_priv,
+                                              size_t min_size,
+                                              vpx_codec_frame_buffer* fb) {
   RTC_DCHECK(user_priv);
   RTC_DCHECK(fb);
   Vp9FrameBufferPool* pool = static_cast<Vp9FrameBufferPool*>(user_priv);
@@ -118,8 +121,8 @@ int32 Vp9FrameBufferPool::VpxGetFrameBuffer(void* user_priv,
 }
 
 // static
-int32 Vp9FrameBufferPool::VpxReleaseFrameBuffer(void* user_priv,
-                                                vpx_codec_frame_buffer* fb) {
+int32_t Vp9FrameBufferPool::VpxReleaseFrameBuffer(void* user_priv,
+                                                  vpx_codec_frame_buffer* fb) {
   RTC_DCHECK(user_priv);
   RTC_DCHECK(fb);
   Vp9FrameBuffer* buffer = static_cast<Vp9FrameBuffer*>(fb->priv);

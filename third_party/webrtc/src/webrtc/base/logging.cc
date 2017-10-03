@@ -13,7 +13,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#if _MSC_VER < 1900
 #define snprintf _snprintf
+#endif
 #undef ERROR  // wingdi.h
 #endif
 
@@ -37,9 +39,9 @@ static const char kLibjingle[] = "libjingle";
 #include <ostream>
 #include <vector>
 
+#include "webrtc/base/criticalsection.h"
 #include "webrtc/base/logging.h"
 #include "webrtc/base/platform_thread.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/base/stringencode.h"
 #include "webrtc/base/stringutils.h"
 #include "webrtc/base/timeutils.h"
@@ -91,34 +93,40 @@ std::string ErrorName(int err, const ConstantLabel* err_table) {
 /////////////////////////////////////////////////////////////////////////////
 
 // By default, release builds don't log, debug builds at info level
-#if _DEBUG
+#if !defined(NDEBUG)
 LoggingSeverity LogMessage::min_sev_ = LS_INFO;
 LoggingSeverity LogMessage::dbg_sev_ = LS_INFO;
-#else  // !_DEBUG
+#else
 LoggingSeverity LogMessage::min_sev_ = LS_NONE;
 LoggingSeverity LogMessage::dbg_sev_ = LS_NONE;
-#endif  // !_DEBUG
+#endif
 bool LogMessage::log_to_stderr_ = true;
 
+namespace {
 // Global lock for log subsystem, only needed to serialize access to streams_.
-CriticalSection LogMessage::crit_;
+CriticalSection g_log_crit;
+}  // namespace
 
 // The list of logging streams currently configured.
 // Note: we explicitly do not clean this up, because of the uncertain ordering
 // of destructors at program exit.  Let the person who sets the stream trigger
-// cleanup by setting to NULL, or let it leak (safe at program exit).
-LogMessage::StreamList LogMessage::streams_ GUARDED_BY(LogMessage::crit_);
+// cleanup by setting to null, or let it leak (safe at program exit).
+LogMessage::StreamList LogMessage::streams_ GUARDED_BY(g_log_crit);
 
 // Boolean options default to false (0)
 bool LogMessage::thread_, LogMessage::timestamp_;
 
-LogMessage::LogMessage(const char* file, int line, LoggingSeverity sev,
-                       LogErrorContext err_ctx, int err, const char* module)
-    : severity_(sev),
-      tag_(kLibjingle),
-      warn_slow_logs_delay_(WARN_SLOW_LOGS_DELAY) {
+LogMessage::LogMessage(const char* file,
+                       int line,
+                       LoggingSeverity sev,
+                       LogErrorContext err_ctx,
+                       int err,
+                       const char* module)
+    : severity_(sev), tag_(kLibjingle) {
   if (timestamp_) {
-    uint32 time = TimeSince(LogStartTime());
+    // Use SystemTimeMillis so that even if tests use fake clocks, the timestamp
+    // in log messages represents the real system time.
+    int64_t time = TimeDiff(SystemTimeMillis(), LogStartTime());
     // Also ensure WallClockStartTime is initialized, so that it matches
     // LogStartTime.
     WallClockStartTime();
@@ -132,7 +140,7 @@ LogMessage::LogMessage(const char* file, int line, LoggingSeverity sev,
     print_stream_ << "[" << std::dec << id << "] ";
   }
 
-  if (file != NULL)
+  if (file != nullptr)
     print_stream_ << "(" << FilenameFromPath(file)  << ":" << line << "): ";
 
   if (err_ctx != ERRCTX_NONE) {
@@ -142,7 +150,7 @@ LogMessage::LogMessage(const char* file, int line, LoggingSeverity sev,
       case ERRCTX_ERRNO:
         tmp << " " << strerror(err);
         break;
-#if WEBRTC_WIN
+#ifdef WEBRTC_WIN
       case ERRCTX_HRESULT: {
         char msgbuf[256];
         DWORD flags = FORMAT_MESSAGE_FROM_SYSTEM;
@@ -150,9 +158,8 @@ LogMessage::LogMessage(const char* file, int line, LoggingSeverity sev,
         if (hmod)
           flags |= FORMAT_MESSAGE_FROM_HMODULE;
         if (DWORD len = FormatMessageA(
-            flags, hmod, err,
-            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            msgbuf, sizeof(msgbuf) / sizeof(msgbuf[0]), NULL)) {
+                flags, hmod, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                msgbuf, sizeof(msgbuf) / sizeof(msgbuf[0]), nullptr)) {
           while ((len > 0) &&
               isspace(static_cast<unsigned char>(msgbuf[len-1]))) {
             msgbuf[--len] = 0;
@@ -164,10 +171,8 @@ LogMessage::LogMessage(const char* file, int line, LoggingSeverity sev,
 #endif  // WEBRTC_WIN
 #if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
       case ERRCTX_OSSTATUS: {
-        tmp << " " << nonnull(GetMacOSStatusErrorString(err), "Unknown error");
-        if (const char* desc = GetMacOSStatusCommentString(err)) {
-          tmp << ": " << desc;
-        }
+        std::string desc(DescriptionFromOSStatus(err));
+        tmp << " " << (desc.empty() ? "Unknown error" : desc.c_str());
         break;
       }
 #endif  // WEBRTC_MAC && !defined(WEBRTC_IOS)
@@ -182,7 +187,12 @@ LogMessage::LogMessage(const char* file,
                        int line,
                        LoggingSeverity sev,
                        const std::string& tag)
-    : LogMessage(file, line, sev, ERRCTX_NONE, 0 /* err */, NULL /* module */) {
+    : LogMessage(file,
+                 line,
+                 sev,
+                 ERRCTX_NONE,
+                 0 /* err */,
+                 nullptr /* module */) {
   tag_ = tag;
   print_stream_ << tag << ": ";
 }
@@ -197,33 +207,21 @@ LogMessage::~LogMessage() {
     OutputToDebug(str, severity_, tag_);
   }
 
-  uint32 before = Time();
-  // Must lock streams_ before accessing
-  CritScope cs(&crit_);
-  for (StreamList::iterator it = streams_.begin(); it != streams_.end(); ++it) {
-    if (severity_ >= it->second) {
-      it->first->OnLogMessage(str);
+  CritScope cs(&g_log_crit);
+  for (auto& kv : streams_) {
+    if (severity_ >= kv.second) {
+      kv.first->OnLogMessage(str);
     }
-  }
-  uint32 delay = TimeSince(before);
-  if (delay >= warn_slow_logs_delay_) {
-    rtc::LogMessage slow_log_warning(__FILE__, __LINE__, LS_WARNING);
-    // If our warning is slow, we don't want to warn about it, because
-    // that would lead to inifinite recursion.  So, give a really big
-    // number for the delay threshold.
-    slow_log_warning.warn_slow_logs_delay_ = UINT_MAX;
-    slow_log_warning.stream() << "Slow log: took " << delay << "ms to write "
-                              << str.size() << " bytes.";
   }
 }
 
-uint32 LogMessage::LogStartTime() {
-  static const uint32 g_start = Time();
+int64_t LogMessage::LogStartTime() {
+  static const int64_t g_start = SystemTimeMillis();
   return g_start;
 }
 
-uint32 LogMessage::WallClockStartTime() {
-  static const uint32 g_start_wallclock = time(NULL);
+uint32_t LogMessage::WallClockStartTime() {
+  static const uint32_t g_start_wallclock = time(nullptr);
   return g_start_wallclock;
 }
 
@@ -237,7 +235,7 @@ void LogMessage::LogTimestamps(bool on) {
 
 void LogMessage::LogToDebug(LoggingSeverity min_sev) {
   dbg_sev_ = min_sev;
-  CritScope cs(&crit_);
+  CritScope cs(&g_log_crit);
   UpdateMinLogSeverity();
 }
 
@@ -246,24 +244,24 @@ void LogMessage::SetLogToStderr(bool log_to_stderr) {
 }
 
 int LogMessage::GetLogToStream(LogSink* stream) {
-  CritScope cs(&crit_);
+  CritScope cs(&g_log_crit);
   LoggingSeverity sev = LS_NONE;
-  for (StreamList::iterator it = streams_.begin(); it != streams_.end(); ++it) {
-    if (!stream || stream == it->first) {
-      sev = std::min(sev, it->second);
+  for (auto& kv : streams_) {
+    if (!stream || stream == kv.first) {
+      sev = std::min(sev, kv.second);
     }
   }
   return sev;
 }
 
 void LogMessage::AddLogToStream(LogSink* stream, LoggingSeverity min_sev) {
-  CritScope cs(&crit_);
+  CritScope cs(&g_log_crit);
   streams_.push_back(std::make_pair(stream, min_sev));
   UpdateMinLogSeverity();
 }
 
 void LogMessage::RemoveLogToStream(LogSink* stream) {
-  CritScope cs(&crit_);
+  CritScope cs(&g_log_crit);
   for (StreamList::iterator it = streams_.begin(); it != streams_.end(); ++it) {
     if (stream == it->first) {
       streams_.erase(it);
@@ -335,10 +333,10 @@ void LogMessage::ConfigureLogging(const char* params) {
   LogToDebug(debug_level);
 }
 
-void LogMessage::UpdateMinLogSeverity() EXCLUSIVE_LOCKS_REQUIRED(crit_) {
+void LogMessage::UpdateMinLogSeverity() EXCLUSIVE_LOCKS_REQUIRED(g_log_crit) {
   LoggingSeverity min_sev = dbg_sev_;
-  for (StreamList::iterator it = streams_.begin(); it != streams_.end(); ++it) {
-    min_sev = std::min(dbg_sev_, it->second);
+  for (auto& kv : streams_) {
+    min_sev = std::min(dbg_sev_, kv.second);
   }
   min_sev_ = min_sev;
 }
@@ -347,7 +345,7 @@ void LogMessage::OutputToDebug(const std::string& str,
                                LoggingSeverity severity,
                                const std::string& tag) {
   bool log_to_stderr = log_to_stderr_;
-#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS) && (!defined(_DEBUG) || defined(NDEBUG))
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS) && defined(NDEBUG)
   // On the Mac, all stderr output goes to the Console log and causes clutter.
   // So in opt builds, don't log to stderr unless the user specifically sets
   // a preference to do so.
@@ -355,7 +353,7 @@ void LogMessage::OutputToDebug(const std::string& str,
                                               "logToStdErr",
                                               kCFStringEncodingUTF8);
   CFStringRef domain = CFBundleGetIdentifier(CFBundleGetMainBundle());
-  if (key != NULL && domain != NULL) {
+  if (key != nullptr && domain != nullptr) {
     Boolean exists_and_is_valid;
     Boolean should_log =
         CFPreferencesGetAppBooleanValue(key, domain, &exists_and_is_valid);
@@ -363,7 +361,7 @@ void LogMessage::OutputToDebug(const std::string& str,
     // stderr.
     log_to_stderr = exists_and_is_valid && should_log;
   }
-  if (key != NULL) {
+  if (key != nullptr) {
     CFRelease(key);
   }
 #endif
@@ -449,7 +447,7 @@ void LogMultiline(LoggingSeverity level, const char* label, bool input,
 
   const char * direction = (input ? " << " : " >> ");
 
-  // NULL data means to flush our count of unprintable characters.
+  // null data means to flush our count of unprintable characters.
   if (!data) {
     if (state && state->unprintable_count_[input]) {
       LOG_V(level) << label << direction << "## "

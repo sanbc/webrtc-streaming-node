@@ -1,7 +1,0 @@
-include_rules = [
-  '+base',
-  '+net',
-  '+testing',
-  '+third_party/icu',
-  '+url',
-]

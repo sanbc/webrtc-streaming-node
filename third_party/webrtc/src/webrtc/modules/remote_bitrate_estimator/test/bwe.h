@@ -11,9 +11,13 @@
 #ifndef WEBRTC_MODULES_REMOTE_BITRATE_ESTIMATOR_TEST_BWE_H_
 #define WEBRTC_MODULES_REMOTE_BITRATE_ESTIMATOR_TEST_BWE_H_
 
+#include <list>
+#include <map>
 #include <sstream>
+#include <string>
 
-#include "webrtc/test/testsupport/gtest_prod_util.h"
+#include "webrtc/base/constructormagic.h"
+#include "webrtc/base/gtest_prod_util.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/packet.h"
 #include "webrtc/modules/bitrate_controller/include/bitrate_controller.h"
 #include "webrtc/modules/remote_bitrate_estimator/test/bwe_test_framework.h"
@@ -105,8 +109,8 @@ class LinkedSet {
   std::list<PacketIdentifierNode*> list_;
 };
 
-const int kMinBitrateKbps = 50;
-const int kMaxBitrateKbps = 2500;
+const int kMinBitrateKbps = 10;
+const int kMaxBitrateKbps = 25000;
 
 class BweSender : public Module {
  public:
@@ -172,11 +176,11 @@ enum BandwidthEstimatorType {
   kNullEstimator,
   kNadaEstimator,
   kRembEstimator,
-  kFullSendSideEstimator,
+  kSendSideEstimator,
   kTcpEstimator
 };
 
-const std::string bwe_names[] = {"Null", "NADA", "REMB", "GCC", "TCP"};
+const char* const bwe_names[] = {"Null", "NADA", "REMB", "GCC", "TCP"};
 
 int64_t GetAbsSendTimeInMs(uint32_t abs_send_time);
 

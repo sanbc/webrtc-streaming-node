@@ -44,15 +44,17 @@ class Win32Socket : public AsyncSocket {
   virtual int Connect(const SocketAddress& addr);
   virtual int Send(const void *buffer, size_t length);
   virtual int SendTo(const void *buffer, size_t length, const SocketAddress& addr);
-  virtual int Recv(void *buffer, size_t length);
-  virtual int RecvFrom(void *buffer, size_t length, SocketAddress *out_addr);
+  virtual int Recv(void* buffer, size_t length, int64_t* timestamp);
+  virtual int RecvFrom(void* buffer,
+                       size_t length,
+                       SocketAddress* out_addr,
+                       int64_t* timestamp);
   virtual int Listen(int backlog);
   virtual Win32Socket *Accept(SocketAddress *out_addr);
   virtual int Close();
   virtual int GetError() const;
   virtual void SetError(int error);
   virtual ConnState GetState() const;
-  virtual int EstimateMTU(uint16* mtu);
   virtual int GetOption(Option opt, int* value);
   virtual int SetOption(Option opt, int value);
 
@@ -72,7 +74,7 @@ class Win32Socket : public AsyncSocket {
   int error_;
   ConnState state_;
   SocketAddress addr_;         // address that we connected to (see DoConnect)
-  uint32 connect_time_;
+  uint32_t connect_time_;
   bool closing_;
   int close_error_;
 
@@ -90,7 +92,7 @@ class Win32Socket : public AsyncSocket {
 
 class Win32SocketServer : public SocketServer {
  public:
-  explicit Win32SocketServer(MessageQueue* message_queue);
+  Win32SocketServer();
   virtual ~Win32SocketServer();
 
   void set_modeless_dialog(HWND hdlg) {
@@ -135,12 +137,9 @@ class Win32SocketServer : public SocketServer {
 
 class Win32Thread : public Thread {
  public:
-  Win32Thread() : ss_(this), id_(0) {
-    set_socketserver(&ss_);
-  }
+  explicit Win32Thread(SocketServer* ss) : Thread(ss),  id_(0) {}
   virtual ~Win32Thread() {
     Stop();
-    set_socketserver(NULL);
   }
   virtual void Run() {
     id_ = GetCurrentThreadId();
@@ -151,7 +150,6 @@ class Win32Thread : public Thread {
     PostThreadMessage(id_, WM_QUIT, 0, 0);
   }
  private:
-  Win32SocketServer ss_;
   DWORD id_;
 };
 
@@ -159,6 +157,6 @@ class Win32Thread : public Thread {
 
 }  // namespace rtc
 
-#endif  // WEBRTC_WIN 
+#endif  // WEBRTC_WIN
 
 #endif  // WEBRTC_BASE_WIN32SOCKETSERVER_H_

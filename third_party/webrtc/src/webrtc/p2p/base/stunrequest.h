@@ -21,6 +21,13 @@ namespace cricket {
 
 class StunRequest;
 
+const int kAllRequests = 0;
+
+// Total max timeouts: 39.75 seconds
+// For years, this was 9.5 seconds, but for networks that experience moments of
+// high RTT (such as 40s on 2G networks), this doesn't work well.
+const int STUN_TOTAL_TIMEOUT = 39750;  // milliseconds
+
 // Manages a set of STUN requests, sending and resending until we receive a
 // response or determine that the request has timed out.
 class StunRequestManager {
@@ -31,6 +38,15 @@ class StunRequestManager {
   // Starts sending the given request (perhaps after a delay).
   void Send(StunRequest* request);
   void SendDelayed(StunRequest* request, int delay);
+
+  // If |msg_type| is kAllRequests, sends all pending requests right away.
+  // Otherwise, sends those that have a matching type right away.
+  // Only for testing.
+  void Flush(int msg_type);
+
+  // Returns true if at least one request with |msg_type| is scheduled for
+  // transmission. For testing only.
+  bool HasRequest(int msg_type);
 
   // Removes a stun request that was added previously.  This will happen
   // automatically when a request succeeds, fails, or times out.
@@ -90,7 +106,7 @@ class StunRequest : public rtc::MessageHandler {
   const StunMessage* msg() const;
 
   // Time elapsed since last send (in ms)
-  uint32 Elapsed() const;
+  int Elapsed() const;
 
  protected:
   int count_;
@@ -118,7 +134,7 @@ class StunRequest : public rtc::MessageHandler {
 
   StunRequestManager* manager_;
   StunMessage* msg_;
-  uint32 tstamp_;
+  int64_t tstamp_;
 
   friend class StunRequestManager;
 };

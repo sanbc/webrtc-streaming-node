@@ -10,13 +10,14 @@
 
 #include "webrtc/modules/audio_device/android/audio_manager.h"
 
+#include <utility>
+
 #include <android/log.h>
 
 #include "webrtc/base/arraysize.h"
 #include "webrtc/base/checks.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/modules/audio_device/android/audio_common.h"
-#include "webrtc/modules/utility/interface/helpers_android.h"
+#include "webrtc/modules/utility/include/helpers_android.h"
 
 #define TAG "AudioManager"
 #define ALOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, TAG, __VA_ARGS__)
@@ -29,15 +30,16 @@ namespace webrtc {
 
 // AudioManager::JavaAudioManager implementation
 AudioManager::JavaAudioManager::JavaAudioManager(
-    NativeRegistration* native_reg, rtc::scoped_ptr<GlobalRef> audio_manager)
-    : audio_manager_(audio_manager.Pass()),
+    NativeRegistration* native_reg,
+    std::unique_ptr<GlobalRef> audio_manager)
+    : audio_manager_(std::move(audio_manager)),
       init_(native_reg->GetMethodId("init", "()Z")),
       dispose_(native_reg->GetMethodId("dispose", "()V")),
       is_communication_mode_enabled_(
           native_reg->GetMethodId("isCommunicationModeEnabled", "()Z")),
       is_device_blacklisted_for_open_sles_usage_(
-          native_reg->GetMethodId(
-              "isDeviceBlacklistedForOpenSLESUsage", "()Z")) {
+          native_reg->GetMethodId("isDeviceBlacklistedForOpenSLESUsage",
+                                  "()Z")) {
   ALOGD("JavaAudioManager::ctor%s", GetThreadInfo().c_str());
 }
 
@@ -71,21 +73,20 @@ AudioManager::AudioManager()
       hardware_agc_(false),
       hardware_ns_(false),
       low_latency_playout_(false),
+      low_latency_record_(false),
       delay_estimate_in_milliseconds_(0) {
   ALOGD("ctor%s", GetThreadInfo().c_str());
   RTC_CHECK(j_environment_);
   JNINativeMethod native_methods[] = {
-      {"nativeCacheAudioParameters",
-       "(IIZZZZIIJ)V",
+      {"nativeCacheAudioParameters", "(IIIZZZZZZIIJ)V",
        reinterpret_cast<void*>(&webrtc::AudioManager::CacheAudioParameters)}};
   j_native_registration_ = j_environment_->RegisterNatives(
-      "org/webrtc/voiceengine/WebRtcAudioManager",
-      native_methods, arraysize(native_methods));
-  j_audio_manager_.reset(new JavaAudioManager(
-      j_native_registration_.get(),
-      j_native_registration_->NewObject(
-          "<init>", "(Landroid/content/Context;J)V",
-          JVM::GetInstance()->context(), PointerTojlong(this))));
+      "org/webrtc/voiceengine/WebRtcAudioManager", native_methods,
+      arraysize(native_methods));
+  j_audio_manager_.reset(
+      new JavaAudioManager(j_native_registration_.get(),
+                           j_native_registration_->NewObject(
+                               "<init>", "(J)V", PointerTojlong(this))));
 }
 
 AudioManager::~AudioManager() {
@@ -99,7 +100,7 @@ void AudioManager::SetActiveAudioLayer(
   ALOGD("SetActiveAudioLayer(%d)%s", audio_layer, GetThreadInfo().c_str());
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
   RTC_DCHECK(!initialized_);
-  // Store the currenttly utilized audio layer.
+  // Store the currently utilized audio layer.
   audio_layer_ = audio_layer;
   // The delay estimate can take one of two fixed values depending on if the
   // device supports low-latency output or not. However, it is also possible
@@ -110,6 +111,45 @@ void AudioManager::SetActiveAudioLayer(
       kHighLatencyModeDelayEstimateInMilliseconds :
       kLowLatencyModeDelayEstimateInMilliseconds;
   ALOGD("delay_estimate_in_milliseconds: %d", delay_estimate_in_milliseconds_);
+}
+
+SLObjectItf AudioManager::GetOpenSLEngine() {
+  ALOGD("GetOpenSLEngine%s", GetThreadInfo().c_str());
+  RTC_DCHECK(thread_checker_.CalledOnValidThread());
+  // Only allow usage of OpenSL ES if such an audio layer has been specified.
+  if (audio_layer_ != AudioDeviceModule::kAndroidOpenSLESAudio &&
+      audio_layer_ !=
+          AudioDeviceModule::kAndroidJavaInputAndOpenSLESOutputAudio) {
+    ALOGI("Unable to create OpenSL engine for the current audio layer: %d",
+          audio_layer_);
+    return nullptr;
+  }
+  // OpenSL ES for Android only supports a single engine per application.
+  // If one already has been created, return existing object instead of
+  // creating a new.
+  if (engine_object_.Get() != nullptr) {
+    ALOGI("The OpenSL ES engine object has already been created");
+    return engine_object_.Get();
+  }
+  // Create the engine object in thread safe mode.
+  const SLEngineOption option[] = {
+      {SL_ENGINEOPTION_THREADSAFE, static_cast<SLuint32>(SL_BOOLEAN_TRUE)}};
+  SLresult result =
+      slCreateEngine(engine_object_.Receive(), 1, option, 0, NULL, NULL);
+  if (result != SL_RESULT_SUCCESS) {
+    ALOGE("slCreateEngine() failed: %s", GetSLErrorString(result));
+    engine_object_.Reset();
+    return nullptr;
+  }
+  // Realize the SL Engine in synchronous mode.
+  result = engine_object_->Realize(engine_object_.Get(), SL_BOOLEAN_FALSE);
+  if (result != SL_RESULT_SUCCESS) {
+    ALOGE("Realize() failed: %s", GetSLErrorString(result));
+    engine_object_.Reset();
+    return nullptr;
+  }
+  // Finally return the SLObjectItf interface of the engine object.
+  return engine_object_.Get();
 }
 
 bool AudioManager::Init() {
@@ -165,6 +205,21 @@ bool AudioManager::IsLowLatencyPlayoutSupported() const {
       false : low_latency_playout_;
 }
 
+bool AudioManager::IsLowLatencyRecordSupported() const {
+  RTC_DCHECK(thread_checker_.CalledOnValidThread());
+  ALOGD("IsLowLatencyRecordSupported()");
+  return low_latency_record_;
+}
+
+bool AudioManager::IsProAudioSupported() const {
+  RTC_DCHECK(thread_checker_.CalledOnValidThread());
+  ALOGD("IsProAudioSupported()");
+  // TODO(henrika): return the state independently of if OpenSL ES is
+  // blacklisted or not for now. We could use the same approach as in
+  // IsLowLatencyPlayoutSupported() but I can't see the need for it yet.
+  return pro_audio_;
+}
+
 int AudioManager::GetDelayEstimateInMilliseconds() const {
   return delay_estimate_in_milliseconds_;
 }
@@ -172,28 +227,35 @@ int AudioManager::GetDelayEstimateInMilliseconds() const {
 void JNICALL AudioManager::CacheAudioParameters(JNIEnv* env,
                                                 jobject obj,
                                                 jint sample_rate,
-                                                jint channels,
+                                                jint output_channels,
+                                                jint input_channels,
                                                 jboolean hardware_aec,
                                                 jboolean hardware_agc,
                                                 jboolean hardware_ns,
                                                 jboolean low_latency_output,
+                                                jboolean low_latency_input,
+                                                jboolean pro_audio,
                                                 jint output_buffer_size,
                                                 jint input_buffer_size,
                                                 jlong native_audio_manager) {
   webrtc::AudioManager* this_object =
       reinterpret_cast<webrtc::AudioManager*>(native_audio_manager);
   this_object->OnCacheAudioParameters(
-      env, sample_rate, channels, hardware_aec, hardware_agc, hardware_ns,
-      low_latency_output, output_buffer_size, input_buffer_size);
+      env, sample_rate, output_channels, input_channels, hardware_aec,
+      hardware_agc, hardware_ns, low_latency_output, low_latency_input,
+      pro_audio, output_buffer_size, input_buffer_size);
 }
 
 void AudioManager::OnCacheAudioParameters(JNIEnv* env,
                                           jint sample_rate,
-                                          jint channels,
+                                          jint output_channels,
+                                          jint input_channels,
                                           jboolean hardware_aec,
                                           jboolean hardware_agc,
                                           jboolean hardware_ns,
                                           jboolean low_latency_output,
+                                          jboolean low_latency_input,
+                                          jboolean pro_audio,
                                           jint output_buffer_size,
                                           jint input_buffer_size) {
   ALOGD("OnCacheAudioParameters%s", GetThreadInfo().c_str());
@@ -201,8 +263,11 @@ void AudioManager::OnCacheAudioParameters(JNIEnv* env,
   ALOGD("hardware_agc: %d", hardware_agc);
   ALOGD("hardware_ns: %d", hardware_ns);
   ALOGD("low_latency_output: %d", low_latency_output);
+  ALOGD("low_latency_input: %d", low_latency_input);
+  ALOGD("pro_audio: %d", pro_audio);
   ALOGD("sample_rate: %d", sample_rate);
-  ALOGD("channels: %d", channels);
+  ALOGD("output_channels: %d", output_channels);
+  ALOGD("input_channels: %d", input_channels);
   ALOGD("output_buffer_size: %d", output_buffer_size);
   ALOGD("input_buffer_size: %d", input_buffer_size);
   RTC_DCHECK(thread_checker_.CalledOnValidThread());
@@ -210,10 +275,11 @@ void AudioManager::OnCacheAudioParameters(JNIEnv* env,
   hardware_agc_ = hardware_agc;
   hardware_ns_ = hardware_ns;
   low_latency_playout_ = low_latency_output;
-  // TODO(henrika): add support for stereo output.
-  playout_parameters_.reset(sample_rate, channels,
+  low_latency_record_ = low_latency_input;
+  pro_audio_ = pro_audio;
+  playout_parameters_.reset(sample_rate, static_cast<size_t>(output_channels),
                             static_cast<size_t>(output_buffer_size));
-  record_parameters_.reset(sample_rate, channels,
+  record_parameters_.reset(sample_rate, static_cast<size_t>(input_channels),
                            static_cast<size_t>(input_buffer_size));
 }
 

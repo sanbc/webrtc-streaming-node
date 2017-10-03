@@ -15,6 +15,7 @@
 #include "webrtc/base/timeutils.h"
 #include "webrtc/common_types.h"
 
+namespace webrtc {
 namespace voetest {
 
 class LoudestFilter {
@@ -29,26 +30,26 @@ class LoudestFilter {
 
  private:
   struct Status {
-    void Set(int audio_level, uint32 last_time_ms) {
+    void Set(int audio_level, int64_t last_time_ms) {
       this->audio_level = audio_level;
       this->last_time_ms = last_time_ms;
     }
     int audio_level;
-    uint32 last_time_ms;
+    int64_t last_time_ms;
   };
 
-  void RemoveTimeoutStreams(uint32 time_ms);
+  void RemoveTimeoutStreams(int64_t time_ms);
   unsigned int FindQuietestStream();
 
   // Keeps the streams being forwarded in pair<SSRC, Status>.
   std::map<unsigned int, Status> stream_levels_;
 
-  const int32 kStreamTimeOutMs = 5000;
+  const int32_t kStreamTimeOutMs = 5000;
   const size_t kMaxMixSize = 3;
   const int kInvalidAudioLevel = 128;
 };
 
-
 }  // namespace voetest
+}  // namespace webrtc
 
 #endif  // WEBRTC_VOICE_ENGINE_TEST_AUTO_TEST_FAKES_LOUDEST_FILTER_H_

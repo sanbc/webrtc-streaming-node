@@ -8,12 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
 #include <string>
 
 #include "webrtc/base/asynctcpsocket.h"
 #include "webrtc/base/gunit.h"
-#include "webrtc/base/physicalsocketserver.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/base/virtualsocketserver.h"
 
 namespace rtc {
@@ -23,8 +22,7 @@ class AsyncTCPSocketTest
       public sigslot::has_slots<> {
  public:
   AsyncTCPSocketTest()
-      : pss_(new rtc::PhysicalSocketServer),
-        vss_(new rtc::VirtualSocketServer(pss_.get())),
+      : vss_(new rtc::VirtualSocketServer()),
         socket_(vss_->CreateAsyncSocket(SOCK_STREAM)),
         tcp_socket_(new AsyncTCPSocket(socket_, true)),
         ready_to_send_(false) {
@@ -37,10 +35,9 @@ class AsyncTCPSocketTest
   }
 
  protected:
-  scoped_ptr<PhysicalSocketServer> pss_;
-  scoped_ptr<VirtualSocketServer> vss_;
+  std::unique_ptr<VirtualSocketServer> vss_;
   AsyncSocket* socket_;
-  scoped_ptr<AsyncTCPSocket> tcp_socket_;
+  std::unique_ptr<AsyncTCPSocket> tcp_socket_;
   bool ready_to_send_;
 };
 

@@ -10,27 +10,18 @@
 
 #include "webrtc/base/thread.h"
 
-#ifndef __has_feature
-#define __has_feature(x) 0  // Compatibility with non-clang or LLVM compilers.
-#endif  // __has_feature
-
 #if defined(WEBRTC_WIN)
 #include <comdef.h>
 #elif defined(WEBRTC_POSIX)
 #include <time.h>
 #endif
 
-#include "webrtc/base/common.h"
+#include "webrtc/base/checks.h"
 #include "webrtc/base/logging.h"
+#include "webrtc/base/nullsocketserver.h"
 #include "webrtc/base/platform_thread.h"
 #include "webrtc/base/stringutils.h"
 #include "webrtc/base/timeutils.h"
-
-#if !__has_feature(objc_arc) && (defined(WEBRTC_MAC))
-#include "webrtc/base/maccocoathreadhelper.h"
-#include "webrtc/base/scoped_autorelease_pool.h"
-#endif
-
 #include "webrtc/base/trace_event.h"
 
 namespace rtc {
@@ -40,40 +31,34 @@ ThreadManager* ThreadManager::Instance() {
   return &thread_manager;
 }
 
+ThreadManager::~ThreadManager() {
+  // By above RTC_DEFINE_STATIC_LOCAL.
+  RTC_NOTREACHED() << "ThreadManager should never be destructed.";
+}
+
 // static
 Thread* Thread::Current() {
-  return ThreadManager::Instance()->CurrentThread();
+  ThreadManager* manager = ThreadManager::Instance();
+  Thread* thread = manager->CurrentThread();
+
+#ifndef NO_MAIN_THREAD_WRAPPING
+  // Only autowrap the thread which instantiated the ThreadManager.
+  if (!thread && manager->IsMainThread()) {
+    thread = new Thread();
+    thread->WrapCurrentWithThreadManager(manager, true);
+  }
+#endif
+
+  return thread;
 }
 
 #if defined(WEBRTC_POSIX)
+#if !defined(WEBRTC_MAC)
 ThreadManager::ThreadManager() {
-  pthread_key_create(&key_, NULL);
-#ifndef NO_MAIN_THREAD_WRAPPING
-  WrapCurrentThread();
-#endif
-#if !__has_feature(objc_arc) && (defined(WEBRTC_MAC))
-  // Under Automatic Reference Counting (ARC), you cannot use autorelease pools
-  // directly. Instead, you use @autoreleasepool blocks instead.  Also, we are
-  // maintaining thread safety using immutability within context of GCD dispatch
-  // queues in this case.
-  InitCocoaMultiThreading();
-#endif
+  main_thread_ref_ = CurrentThreadRef();
+  pthread_key_create(&key_, nullptr);
 }
-
-ThreadManager::~ThreadManager() {
-#if __has_feature(objc_arc)
-  @autoreleasepool
-#elif defined(WEBRTC_MAC)
-  // This is called during exit, at which point apparently no NSAutoreleasePools
-  // are available; but we might still need them to do cleanup (or we get the
-  // "no autoreleasepool in place, just leaking" warning when exiting).
-  ScopedAutoreleasePool pool;
 #endif
-  {
-    UnwrapCurrentThread();
-    pthread_key_delete(key_);
-  }
-}
 
 Thread *ThreadManager::CurrentThread() {
   return static_cast<Thread *>(pthread_getspecific(key_));
@@ -86,15 +71,8 @@ void ThreadManager::SetCurrentThread(Thread *thread) {
 
 #if defined(WEBRTC_WIN)
 ThreadManager::ThreadManager() {
+  main_thread_ref_ = CurrentThreadRef();
   key_ = TlsAlloc();
-#ifndef NO_MAIN_THREAD_WRAPPING
-  WrapCurrentThread();
-#endif
-}
-
-ThreadManager::~ThreadManager() {
-  UnwrapCurrentThread();
-  TlsFree(key_);
 }
 
 Thread *ThreadManager::CurrentThread() {
@@ -108,7 +86,7 @@ void ThreadManager::SetCurrentThread(Thread *thread) {
 
 Thread *ThreadManager::WrapCurrentThread() {
   Thread* result = CurrentThread();
-  if (NULL == result) {
+  if (nullptr == result) {
     result = new Thread();
     result->WrapCurrentWithThreadManager(this, true);
   }
@@ -123,10 +101,9 @@ void ThreadManager::UnwrapCurrentThread() {
   }
 }
 
-struct ThreadInit {
-  Thread* thread;
-  Runnable* runnable;
-};
+bool ThreadManager::IsMainThread() {
+  return IsThreadRefEqual(CurrentThreadRef(), main_thread_ref_);
+}
 
 Thread::ScopedDisallowBlockingCalls::ScopedDisallowBlockingCalls()
   : thread_(Thread::Current()),
@@ -134,26 +111,54 @@ Thread::ScopedDisallowBlockingCalls::ScopedDisallowBlockingCalls()
 }
 
 Thread::ScopedDisallowBlockingCalls::~ScopedDisallowBlockingCalls() {
-  ASSERT(thread_->IsCurrent());
+  RTC_DCHECK(thread_->IsCurrent());
   thread_->SetAllowBlockingCalls(previous_state_);
 }
 
+Thread::Thread() : Thread(SocketServer::CreateDefault()) {}
+
 Thread::Thread(SocketServer* ss)
-    : MessageQueue(ss),
-      priority_(PRIORITY_NORMAL),
+    : MessageQueue(ss, false),
       running_(true, false),
 #if defined(WEBRTC_WIN)
-      thread_(NULL),
+      thread_(nullptr),
       thread_id_(0),
 #endif
       owned_(true),
       blocking_calls_allowed_(true) {
   SetName("Thread", this);  // default name
+  DoInit();
+}
+
+Thread::Thread(std::unique_ptr<SocketServer> ss)
+    : MessageQueue(std::move(ss), false),
+      running_(true, false),
+#if defined(WEBRTC_WIN)
+      thread_(nullptr),
+      thread_id_(0),
+#endif
+      owned_(true),
+      blocking_calls_allowed_(true) {
+  SetName("Thread", this);  // default name
+  DoInit();
 }
 
 Thread::~Thread() {
   Stop();
-  Clear(NULL);
+  DoDestroy();
+}
+
+bool Thread::IsCurrent() const {
+  return ThreadManager::Instance()->CurrentThread() == this;
+}
+
+std::unique_ptr<Thread> Thread::CreateWithSocketServer() {
+  return std::unique_ptr<Thread>(new Thread(SocketServer::CreateDefault()));
+}
+
+std::unique_ptr<Thread> Thread::Create() {
+  return std::unique_ptr<Thread>(
+      new Thread(std::unique_ptr<SocketServer>(new NullSocketServer())));
 }
 
 bool Thread::SleepMs(int milliseconds) {
@@ -168,7 +173,7 @@ bool Thread::SleepMs(int milliseconds) {
   struct timespec ts;
   ts.tv_sec = milliseconds / 1000;
   ts.tv_nsec = (milliseconds % 1000) * 1000000;
-  int ret = nanosleep(&ts, NULL);
+  int ret = nanosleep(&ts, nullptr);
   if (ret != 0) {
     LOG_ERR(LS_WARNING) << "nanosleep() returning early";
     return false;
@@ -188,41 +193,13 @@ bool Thread::SetName(const std::string& name, const void* obj) {
   return true;
 }
 
-bool Thread::SetPriority(ThreadPriority priority) {
-#if defined(WEBRTC_WIN)
-  if (running()) {
-    ASSERT(thread_ != NULL);
-    BOOL ret = FALSE;
-    if (priority == PRIORITY_NORMAL) {
-      ret = ::SetThreadPriority(thread_, THREAD_PRIORITY_NORMAL);
-    } else if (priority == PRIORITY_HIGH) {
-      ret = ::SetThreadPriority(thread_, THREAD_PRIORITY_HIGHEST);
-    } else if (priority == PRIORITY_ABOVE_NORMAL) {
-      ret = ::SetThreadPriority(thread_, THREAD_PRIORITY_ABOVE_NORMAL);
-    } else if (priority == PRIORITY_IDLE) {
-      ret = ::SetThreadPriority(thread_, THREAD_PRIORITY_IDLE);
-    }
-    if (!ret) {
-      return false;
-    }
-  }
-  priority_ = priority;
-  return true;
-#else
-  // TODO: Implement for Linux/Mac if possible.
-  if (running()) return false;
-  priority_ = priority;
-  return true;
-#endif
-}
-
 bool Thread::Start(Runnable* runnable) {
-  ASSERT(owned_);
+  RTC_DCHECK(owned_);
   if (!owned_) return false;
-  ASSERT(!running());
+  RTC_DCHECK(!running());
   if (running()) return false;
 
-  Restart();  // reset fStop_ if the thread is being restarted
+  Restart();  // reset IsQuitting() if the thread is being restarted
 
   // Make sure that ThreadManager is created on the main thread before
   // we start a new thread.
@@ -232,55 +209,15 @@ bool Thread::Start(Runnable* runnable) {
   init->thread = this;
   init->runnable = runnable;
 #if defined(WEBRTC_WIN)
-  DWORD flags = 0;
-  if (priority_ != PRIORITY_NORMAL) {
-    flags = CREATE_SUSPENDED;
-  }
-  thread_ = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)PreRun, init, flags,
-                         &thread_id_);
+  thread_ = CreateThread(nullptr, 0, PreRun, init, 0, &thread_id_);
   if (thread_) {
     running_.Set();
-    if (priority_ != PRIORITY_NORMAL) {
-      SetPriority(priority_);
-      ::ResumeThread(thread_);
-    }
   } else {
     return false;
   }
 #elif defined(WEBRTC_POSIX)
   pthread_attr_t attr;
   pthread_attr_init(&attr);
-
-  // Thread priorities are not supported in NaCl.
-#if !defined(__native_client__)
-  if (priority_ != PRIORITY_NORMAL) {
-    if (priority_ == PRIORITY_IDLE) {
-      // There is no POSIX-standard way to set a below-normal priority for an
-      // individual thread (only whole process), so let's not support it.
-      LOG(LS_WARNING) << "PRIORITY_IDLE not supported";
-    } else {
-      // Set real-time round-robin policy.
-      if (pthread_attr_setschedpolicy(&attr, SCHED_RR) != 0) {
-        LOG(LS_ERROR) << "pthread_attr_setschedpolicy";
-      }
-      struct sched_param param;
-      if (pthread_attr_getschedparam(&attr, &param) != 0) {
-        LOG(LS_ERROR) << "pthread_attr_getschedparam";
-      } else {
-        // The numbers here are arbitrary.
-        if (priority_ == PRIORITY_HIGH) {
-          param.sched_priority = 6;           // 6 = HIGH
-        } else {
-          ASSERT(priority_ == PRIORITY_ABOVE_NORMAL);
-          param.sched_priority = 4;           // 4 = ABOVE_NORMAL
-        }
-        if (pthread_attr_setschedparam(&attr, &param) != 0) {
-          LOG(LS_ERROR) << "pthread_attr_setschedparam";
-        }
-      }
-    }
-  }
-#endif  // !defined(__native_client__)
 
   int error_code = pthread_create(&thread_, &attr, PreRun, init);
   if (0 != error_code) {
@@ -298,13 +235,13 @@ bool Thread::WrapCurrent() {
 
 void Thread::UnwrapCurrent() {
   // Clears the platform-specific thread-specific storage.
-  ThreadManager::Instance()->SetCurrentThread(NULL);
+  ThreadManager::Instance()->SetCurrentThread(nullptr);
 #if defined(WEBRTC_WIN)
-  if (thread_ != NULL) {
+  if (thread_ != nullptr) {
     if (!CloseHandle(thread_)) {
       LOG_GLE(LS_ERROR) << "When unwrapping thread, failed to close handle.";
     }
-    thread_ = NULL;
+    thread_ = nullptr;
   }
 #endif
   running_.Reset();
@@ -316,17 +253,17 @@ void Thread::SafeWrapCurrent() {
 
 void Thread::Join() {
   if (running()) {
-    ASSERT(!IsCurrent());
+    RTC_DCHECK(!IsCurrent());
     if (Current() && !Current()->blocking_calls_allowed_) {
       LOG(LS_WARNING) << "Waiting for the thread to join, "
                       << "but blocking calls have been disallowed";
     }
 
 #if defined(WEBRTC_WIN)
-    ASSERT(thread_ != NULL);
+    RTC_DCHECK(thread_ != nullptr);
     WaitForSingleObject(thread_, INFINITE);
     CloseHandle(thread_);
-    thread_ = NULL;
+    thread_ = nullptr;
     thread_id_ = 0;
 #elif defined(WEBRTC_POSIX)
     void *pv;
@@ -337,7 +274,7 @@ void Thread::Join() {
 }
 
 bool Thread::SetAllowBlockingCalls(bool allow) {
-  ASSERT(IsCurrent());
+  RTC_DCHECK(IsCurrent());
   bool previous = blocking_calls_allowed_;
   blocking_calls_allowed_ = allow;
   return previous;
@@ -345,32 +282,35 @@ bool Thread::SetAllowBlockingCalls(bool allow) {
 
 // static
 void Thread::AssertBlockingIsAllowedOnCurrentThread() {
-#ifdef _DEBUG
+#if !defined(NDEBUG)
   Thread* current = Thread::Current();
-  ASSERT(!current || current->blocking_calls_allowed_);
+  RTC_DCHECK(!current || current->blocking_calls_allowed_);
 #endif
 }
 
+// static
+#if !defined(WEBRTC_MAC)
+#if defined(WEBRTC_WIN)
+DWORD WINAPI Thread::PreRun(LPVOID pv) {
+#else
 void* Thread::PreRun(void* pv) {
+#endif
   ThreadInit* init = static_cast<ThreadInit*>(pv);
   ThreadManager::Instance()->SetCurrentThread(init->thread);
   rtc::SetCurrentThreadName(init->thread->name_.c_str());
-#if __has_feature(objc_arc)
-  @autoreleasepool
-#elif defined(WEBRTC_MAC)
-  // Make sure the new thread has an autoreleasepool
-  ScopedAutoreleasePool pool;
-#endif
-  {
-    if (init->runnable) {
-      init->runnable->Run(init->thread);
-    } else {
-      init->thread->Run();
-    }
-    delete init;
-    return NULL;
+  if (init->runnable) {
+    init->runnable->Run(init->thread);
+  } else {
+    init->thread->Run();
   }
+  delete init;
+#ifdef WEBRTC_WIN
+  return 0;
+#else
+  return nullptr;
+#endif
 }
+#endif
 
 void Thread::Run() {
   ProcessMessages(kForever);
@@ -385,14 +325,18 @@ void Thread::Stop() {
   Join();
 }
 
-void Thread::Send(MessageHandler *phandler, uint32 id, MessageData *pdata) {
-  if (fStop_)
+void Thread::Send(const Location& posted_from,
+                  MessageHandler* phandler,
+                  uint32_t id,
+                  MessageData* pdata) {
+  if (IsQuitting())
     return;
 
   // Sent messages are sent to the MessageHandler directly, in the context
   // of "thread", like Win32 SendMessage. If in the right context,
   // call the handler directly.
   Message msg;
+  msg.posted_from = posted_from;
   msg.phandler = phandler;
   msg.message_id = id;
   msg.pdata = pdata;
@@ -405,7 +349,7 @@ void Thread::Send(MessageHandler *phandler, uint32 id, MessageData *pdata) {
 
   AutoThread thread;
   Thread *current_thread = Thread::Current();
-  ASSERT(current_thread != NULL);  // AutoThread ensures this
+  RTC_DCHECK(current_thread != nullptr);  // AutoThread ensures this
 
   bool ready = false;
   {
@@ -418,8 +362,7 @@ void Thread::Send(MessageHandler *phandler, uint32 id, MessageData *pdata) {
   }
 
   // Wait for a reply
-
-  ss_->WakeUp();
+  WakeUpSocketServer();
 
   bool waited = false;
   crit_.Enter();
@@ -451,7 +394,7 @@ void Thread::Send(MessageHandler *phandler, uint32 id, MessageData *pdata) {
 }
 
 void Thread::ReceiveSends() {
-  ReceiveSendsFromThread(NULL);
+  ReceiveSendsFromThread(nullptr);
 }
 
 void Thread::ReceiveSendsFromThread(const Thread* source) {
@@ -478,7 +421,7 @@ void Thread::ReceiveSendsFromThread(const Thread* source) {
 bool Thread::PopSendMessageFromThread(const Thread* source, _SendMessage* msg) {
   for (std::list<_SendMessage>::iterator it = sendlist_.begin();
        it != sendlist_.end(); ++it) {
-    if (it->thread == source || source == NULL) {
+    if (it->thread == source || source == nullptr) {
       *msg = *it;
       sendlist_.erase(it);
       return true;
@@ -487,21 +430,22 @@ bool Thread::PopSendMessageFromThread(const Thread* source, _SendMessage* msg) {
   return false;
 }
 
-void Thread::InvokeBegin() {
-  TRACE_EVENT_BEGIN0("webrtc", "Thread::Invoke");
+void Thread::InvokeInternal(const Location& posted_from,
+                            MessageHandler* handler) {
+  TRACE_EVENT2("webrtc", "Thread::Invoke", "src_file_and_line",
+               posted_from.file_and_line(), "src_func",
+               posted_from.function_name());
+  Send(posted_from, handler);
 }
 
-void Thread::InvokeEnd() {
-  TRACE_EVENT_END0("webrtc", "Thread::Invoke");
-}
-
-void Thread::Clear(MessageHandler *phandler, uint32 id,
+void Thread::Clear(MessageHandler* phandler,
+                   uint32_t id,
                    MessageList* removed) {
   CritScope cs(&crit_);
 
   // Remove messages on sendlist_ with phandler
   // Object target cleared: remove from send list, wakeup/set ready
-  // if sender not NULL.
+  // if sender not null.
 
   std::list<_SendMessage>::iterator iter = sendlist_.begin();
   while (iter != sendlist_.end()) {
@@ -523,34 +467,27 @@ void Thread::Clear(MessageHandler *phandler, uint32 id,
   MessageQueue::Clear(phandler, id, removed);
 }
 
+#if !defined(WEBRTC_MAC)
+// Note that these methods have a separate implementation for mac and ios
+// defined in webrtc/base/thread_darwin.mm.
 bool Thread::ProcessMessages(int cmsLoop) {
-  uint32 msEnd = (kForever == cmsLoop) ? 0 : TimeAfter(cmsLoop);
+  int64_t msEnd = (kForever == cmsLoop) ? 0 : TimeAfter(cmsLoop);
   int cmsNext = cmsLoop;
 
   while (true) {
-#if __has_feature(objc_arc)
-    @autoreleasepool
-#elif defined(WEBRTC_MAC)
-    // see: http://developer.apple.com/library/mac/#documentation/Cocoa/Reference/Foundation/Classes/NSAutoreleasePool_Class/Reference/Reference.html
-    // Each thread is supposed to have an autorelease pool. Also for event loops
-    // like this, autorelease pool needs to be created and drained/released
-    // for each cycle.
-    ScopedAutoreleasePool pool;
-#endif
-    {
-      Message msg;
-      if (!Get(&msg, cmsNext))
-        return !IsQuitting();
-      Dispatch(&msg);
+    Message msg;
+    if (!Get(&msg, cmsNext))
+      return !IsQuitting();
+    Dispatch(&msg);
 
-      if (cmsLoop != kForever) {
-        cmsNext = TimeUntil(msEnd);
-        if (cmsNext < 0)
-          return true;
-      }
+    if (cmsLoop != kForever) {
+      cmsNext = static_cast<int>(TimeUntil(msEnd));
+      if (cmsNext < 0)
+        return true;
     }
   }
 }
+#endif
 
 bool Thread::WrapCurrentWithThreadManager(ThreadManager* thread_manager,
                                           bool need_synchronize_access) {
@@ -578,7 +515,7 @@ bool Thread::WrapCurrentWithThreadManager(ThreadManager* thread_manager,
   return true;
 }
 
-AutoThread::AutoThread(SocketServer* ss) : Thread(ss) {
+AutoThread::AutoThread() {
   if (!ThreadManager::Instance()->CurrentThread()) {
     ThreadManager::Instance()->SetCurrentThread(this);
   }
@@ -587,21 +524,30 @@ AutoThread::AutoThread(SocketServer* ss) : Thread(ss) {
 AutoThread::~AutoThread() {
   Stop();
   if (ThreadManager::Instance()->CurrentThread() == this) {
-    ThreadManager::Instance()->SetCurrentThread(NULL);
+    ThreadManager::Instance()->SetCurrentThread(nullptr);
   }
 }
 
-#if defined(WEBRTC_WIN)
-void ComThread::Run() {
-  HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-  ASSERT(SUCCEEDED(hr));
-  if (SUCCEEDED(hr)) {
-    Thread::Run();
-    CoUninitialize();
-  } else {
-    LOG(LS_ERROR) << "CoInitialize failed, hr=" << hr;
+AutoSocketServerThread::AutoSocketServerThread(SocketServer* ss)
+    : Thread(ss) {
+  old_thread_ = ThreadManager::Instance()->CurrentThread();
+  rtc::ThreadManager::Instance()->SetCurrentThread(this);
+  if (old_thread_) {
+    MessageQueueManager::Remove(old_thread_);
   }
 }
-#endif
+
+AutoSocketServerThread::~AutoSocketServerThread() {
+  RTC_DCHECK(ThreadManager::Instance()->CurrentThread() == this);
+  // Some tests post destroy messages to this thread. To avoid memory
+  // leaks, we have to process those messages. In particular
+  // P2PTransportChannelPingTest, relying on the message posted in
+  // cricket::Connection::Destroy.
+  ProcessMessages(0);
+  rtc::ThreadManager::Instance()->SetCurrentThread(old_thread_);
+  if (old_thread_) {
+    MessageQueueManager::Add(old_thread_);
+  }
+}
 
 }  // namespace rtc

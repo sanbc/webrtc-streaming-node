@@ -12,7 +12,9 @@
 #define WEBRTC_BASE_TESTECHOSERVER_H_
 
 #include <list>
+#include <memory>
 #include "webrtc/base/asynctcpsocket.h"
+#include "webrtc/base/constructormagic.h"
 #include "webrtc/base/socketaddress.h"
 #include "webrtc/base/sigslot.h"
 #include "webrtc/base/thread.h"
@@ -41,7 +43,7 @@ class TestEchoServer : public sigslot::has_slots<> {
 
  private:
   void OnAccept(AsyncSocket* socket) {
-    AsyncSocket* raw_socket = socket->Accept(NULL);
+    AsyncSocket* raw_socket = socket->Accept(nullptr);
     if (raw_socket) {
       AsyncTCPSocket* packet_socket = new AsyncTCPSocket(raw_socket, false);
       packet_socket->SignalReadPacket.connect(this, &TestEchoServer::OnPacket);
@@ -63,7 +65,7 @@ class TestEchoServer : public sigslot::has_slots<> {
   }
 
   typedef std::list<AsyncTCPSocket*> ClientList;
-  scoped_ptr<AsyncSocket> server_socket_;
+  std::unique_ptr<AsyncSocket> server_socket_;
   ClientList client_sockets_;
   RTC_DISALLOW_COPY_AND_ASSIGN(TestEchoServer);
 };

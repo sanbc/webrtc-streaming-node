@@ -8,13 +8,14 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <stdint.h>
+
+#include <memory>
+
 #include "webrtc/base/asyncresolverinterface.h"
-#include "webrtc/base/basictypes.h"
 #include "webrtc/base/bind.h"
 #include "webrtc/base/checks.h"
 #include "webrtc/base/gunit.h"
-#include "webrtc/base/physicalsocketserver.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/base/ssladapter.h"
 #include "webrtc/base/virtualsocketserver.h"
 #include "webrtc/p2p/base/basicpacketsocketfactory.h"
@@ -39,10 +40,8 @@ const rtc::SocketAddress kStunMappedAddr("77.77.77.77", 0);
 class StunProberTest : public testing::Test {
  public:
   StunProberTest()
-      : main_(rtc::Thread::Current()),
-        pss_(new rtc::PhysicalSocketServer),
-        ss_(new rtc::VirtualSocketServer(pss_.get())),
-        ss_scope_(ss_.get()),
+      : ss_(new rtc::VirtualSocketServer()),
+        main_(ss_.get()),
         result_(StunProber::SUCCESS),
         stun_server_1_(cricket::TestStunServer::Create(rtc::Thread::Current(),
                                                        kStunAddr1)),
@@ -59,8 +58,8 @@ class StunProberTest : public testing::Test {
                     const std::vector<rtc::SocketAddress>& addrs,
                     const rtc::NetworkManager::NetworkList& networks,
                     bool shared_socket,
-                    uint16 interval,
-                    uint16 pings_per_ip) {
+                    uint16_t interval,
+                    uint16_t pings_per_ip) {
     prober.reset(
         new StunProber(socket_factory, rtc::Thread::Current(), networks));
     prober->Start(addrs, shared_socket, interval, pings_per_ip,
@@ -83,18 +82,18 @@ class StunProberTest : public testing::Test {
     rtc::NetworkManager::NetworkList networks;
     networks.push_back(&ipv4_network1);
 
-    rtc::scoped_ptr<rtc::BasicPacketSocketFactory> socket_factory(
+    std::unique_ptr<rtc::BasicPacketSocketFactory> socket_factory(
         new rtc::BasicPacketSocketFactory());
 
     // Set up the expected results for verification.
     std::set<std::string> srflx_addresses;
     srflx_addresses.insert(kStunMappedAddr.ToString());
-    const uint32 total_pings_tried =
-        static_cast<uint32>(pings_per_ip * addrs.size());
+    const uint32_t total_pings_tried =
+        static_cast<uint32_t>(pings_per_ip * addrs.size());
 
     // The reported total_pings should not count for pings sent to the
     // kFailedStunAddr.
-    const uint32 total_pings_reported = total_pings_tried - pings_per_ip;
+    const uint32_t total_pings_reported = total_pings_tried - pings_per_ip;
 
     StartProbing(socket_factory.get(), addrs, networks, shared_mode, 3,
                  pings_per_ip);
@@ -106,9 +105,9 @@ class StunProberTest : public testing::Test {
     EXPECT_EQ(stats.success_percent, 100);
     EXPECT_TRUE(stats.nat_type > stunprober::NATTYPE_NONE);
     EXPECT_EQ(stats.srflx_addrs, srflx_addresses);
-    EXPECT_EQ(static_cast<uint32>(stats.num_request_sent),
+    EXPECT_EQ(static_cast<uint32_t>(stats.num_request_sent),
               total_pings_reported);
-    EXPECT_EQ(static_cast<uint32>(stats.num_response_received),
+    EXPECT_EQ(static_cast<uint32_t>(stats.num_response_received),
               total_pings_reported);
   }
 
@@ -118,15 +117,13 @@ class StunProberTest : public testing::Test {
     stopped_ = true;
   }
 
-  rtc::Thread* main_;
-  rtc::scoped_ptr<rtc::PhysicalSocketServer> pss_;
-  rtc::scoped_ptr<rtc::VirtualSocketServer> ss_;
-  rtc::SocketServerScope ss_scope_;
-  rtc::scoped_ptr<StunProber> prober;
+  std::unique_ptr<rtc::VirtualSocketServer> ss_;
+  rtc::AutoSocketServerThread main_;
+  std::unique_ptr<StunProber> prober;
   int result_ = 0;
   bool stopped_ = false;
-  rtc::scoped_ptr<cricket::TestStunServer> stun_server_1_;
-  rtc::scoped_ptr<cricket::TestStunServer> stun_server_2_;
+  std::unique_ptr<cricket::TestStunServer> stun_server_1_;
+  std::unique_ptr<cricket::TestStunServer> stun_server_2_;
 };
 
 TEST_F(StunProberTest, NonSharedMode) {

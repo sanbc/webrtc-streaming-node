@@ -14,9 +14,10 @@
 #include <ws2tcpip.h>
 #include <algorithm>
 
+#include "webrtc/base/arraysize.h"
 #include "webrtc/base/basictypes.h"
 #include "webrtc/base/byteorder.h"
-#include "webrtc/base/common.h"
+#include "webrtc/base/checks.h"
 #include "webrtc/base/logging.h"
 
 namespace rtc {
@@ -34,7 +35,7 @@ static int inet_pton_v6(const char* src, void* dst);
 const char* win32_inet_ntop(int af, const void *src,
                             char* dst, socklen_t size) {
   if (!src || !dst) {
-    return NULL;
+    return nullptr;
   }
   switch (af) {
     case AF_INET: {
@@ -44,7 +45,7 @@ const char* win32_inet_ntop(int af, const void *src,
       return inet_ntop_v6(src, dst, size);
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 // As above, but for inet_pton. Implements inet_pton for v4 and v6.
@@ -65,7 +66,7 @@ int win32_inet_pton(int af, const char* src, void* dst) {
 // Outputs "dotted-quad" decimal notation.
 const char* inet_ntop_v4(const void* src, char* dst, socklen_t size) {
   if (size < INET_ADDRSTRLEN) {
-    return NULL;
+    return nullptr;
   }
   const struct in_addr* as_in_addr =
       reinterpret_cast<const struct in_addr*>(src);
@@ -80,15 +81,14 @@ const char* inet_ntop_v4(const void* src, char* dst, socklen_t size) {
 // Helper function for inet_ntop for IPv6 addresses.
 const char* inet_ntop_v6(const void* src, char* dst, socklen_t size) {
   if (size < INET6_ADDRSTRLEN) {
-    return NULL;
+    return nullptr;
   }
-  const uint16* as_shorts =
-      reinterpret_cast<const uint16*>(src);
+  const uint16_t* as_shorts = reinterpret_cast<const uint16_t*>(src);
   int runpos[8];
   int current = 1;
   int max = 0;
   int maxpos = -1;
-  int run_array_size = ARRAY_SIZE(runpos);
+  int run_array_size = arraysize(runpos);
   // Run over the address marking runs of 0s.
   for (int i = 0; i < run_array_size; ++i) {
     if (as_shorts[i] == 0) {
@@ -214,8 +214,8 @@ int inet_pton_v6(const char* src, void* dst) {
   struct in6_addr an_addr;
   memset(&an_addr, 0, sizeof(an_addr));
 
-  uint16* addr_cursor = reinterpret_cast<uint16*>(&an_addr.s6_addr[0]);
-  uint16* addr_end = reinterpret_cast<uint16*>(&an_addr.s6_addr[16]);
+  uint16_t* addr_cursor = reinterpret_cast<uint16_t*>(&an_addr.s6_addr[0]);
+  uint16_t* addr_end = reinterpret_cast<uint16_t*>(&an_addr.s6_addr[16]);
   bool seencompressed = false;
 
   // Addresses that start with "::" (i.e., a run of initial zeros) or
@@ -228,7 +228,7 @@ int inet_pton_v6(const char* src, void* dst) {
     if (rtc::strchr(addrstart, ".")) {
       const char* colon = rtc::strchr(addrstart, "::");
       if (colon) {
-        uint16 a_short;
+        uint16_t a_short;
         int bytesread = 0;
         if (sscanf(addrstart, "%hx%n", &a_short, &bytesread) != 1 ||
             a_short != 0xFFFF || bytesread != 4) {
@@ -276,6 +276,11 @@ int inet_pton_v6(const char* src, void* dst) {
             ++coloncounter;
           }
           // (coloncount + 1) is the number of shorts left in the address.
+          // If this number is greater than the number of available shorts, the
+          // address is malformed.
+          if (coloncount + 1 > addr_end - addr_cursor) {
+            return 0;
+          }
           addr_cursor = addr_end - (coloncount + 1);
           seencompressed = true;
         }
@@ -283,9 +288,9 @@ int inet_pton_v6(const char* src, void* dst) {
         ++readcursor;
       }
     } else {
-      uint16 word;
+      uint16_t word;
       int bytesread = 0;
-      if (sscanf(readcursor, "%hx%n", &word, &bytesread) != 1) {
+      if (sscanf(readcursor, "%4hx%n", &word, &bytesread) != 1) {
         return 0;
       } else {
         *addr_cursor = HostToNetwork16(word);
@@ -318,7 +323,7 @@ int inet_pton_v6(const char* src, void* dst) {
 //
 
 void FileTimeToUnixTime(const FILETIME& ft, time_t* ut) {
-  ASSERT(NULL != ut);
+  RTC_DCHECK(nullptr != ut);
 
   // FILETIME has an earlier date base than time_t (1/1/1970), so subtract off
   // the difference.
@@ -342,7 +347,7 @@ void FileTimeToUnixTime(const FILETIME& ft, time_t* ut) {
 }
 
 void UnixTimeToFileTime(const time_t& ut, FILETIME* ft) {
-  ASSERT(NULL != ft);
+  RTC_DCHECK(nullptr != ft);
 
   // FILETIME has an earlier date base than time_t (1/1/1970), so add in
   // the difference.
@@ -362,7 +367,7 @@ void UnixTimeToFileTime(const time_t& ut, FILETIME* ft) {
   // base date value.
   const ULONGLONG RATIO = 10000000;
   ULARGE_INTEGER current_ul;
-  current_ul.QuadPart = base_ul.QuadPart + static_cast<int64>(ut) * RATIO;
+  current_ul.QuadPart = base_ul.QuadPart + static_cast<int64_t>(ut) * RATIO;
   memcpy(ft, &current_ul, sizeof(FILETIME));
 }
 
@@ -373,9 +378,9 @@ bool Utf8ToWindowsFilename(const std::string& utf8, std::wstring* filename) {
   // TODO: Write unittests
 
   // Convert to Utf16
-  int wlen = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                                   static_cast<int>(utf8.length() + 1), NULL,
-                                   0);
+  int wlen =
+      ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                            static_cast<int>(utf8.length() + 1), nullptr, 0);
   if (0 == wlen) {
     return false;
   }
@@ -388,11 +393,11 @@ bool Utf8ToWindowsFilename(const std::string& utf8, std::wstring* filename) {
   // Replace forward slashes with backslashes
   std::replace(wfilename, wfilename + wlen, L'/', L'\\');
   // Convert to complete filename
-  DWORD full_len = ::GetFullPathName(wfilename, 0, NULL, NULL);
+  DWORD full_len = ::GetFullPathName(wfilename, 0, nullptr, nullptr);
   if (0 == full_len) {
     return false;
   }
-  wchar_t* filepart = NULL;
+  wchar_t* filepart = nullptr;
   wchar_t* full_filename = STACK_ARRAY(wchar_t, full_len + 6);
   wchar_t* start = full_filename + 6;
   if (0 == ::GetFullPathName(wfilename, full_len, start, &filepart)) {
@@ -404,13 +409,13 @@ bool Utf8ToWindowsFilename(const std::string& utf8, std::wstring* filename) {
     // Non-unc path:     <pathname>
     //      Becomes: \\?\<pathname>
     start -= 4;
-    ASSERT(start >= full_filename);
+    RTC_DCHECK(start >= full_filename);
     memcpy(start, kLongPathPrefix, 4 * sizeof(wchar_t));
   } else if (start[2] != L'?') {
     // Unc path:       \\<server>\<pathname>
     //  Becomes: \\?\UNC\<server>\<pathname>
     start -= 6;
-    ASSERT(start >= full_filename);
+    RTC_DCHECK(start >= full_filename);
     memcpy(start, kLongPathPrefix, 7 * sizeof(wchar_t));
   } else {
     // Already in long-path form.
@@ -436,9 +441,8 @@ bool GetCurrentProcessIntegrityLevel(int* level) {
   HANDLE process = ::GetCurrentProcess(), token;
   if (OpenProcessToken(process, TOKEN_QUERY | TOKEN_QUERY_SOURCE, &token)) {
     DWORD size;
-    if (!GetTokenInformation(token, TokenIntegrityLevel, NULL, 0, &size) &&
+    if (!GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size) &&
         GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
-
       char* buf = STACK_ARRAY(char, size);
       TOKEN_MANDATORY_LABEL* til =
           reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf);

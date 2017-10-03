@@ -13,13 +13,14 @@
 
 #include <stdio.h>
 
-#include "webrtc/base/basictypes.h"
+#include <memory>
+
 #include "webrtc/base/buffer.h"
+#include "webrtc/base/constructormagic.h"
 #include "webrtc/base/criticalsection.h"
 #include "webrtc/base/logging.h"
 #include "webrtc/base/messagehandler.h"
 #include "webrtc/base/messagequeue.h"
-#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/base/sigslot.h"
 
 namespace rtc {
@@ -124,7 +125,7 @@ class StreamInterface : public MessageHandler {
   // The following four methods are used to avoid copying data multiple times.
 
   // GetReadData returns a pointer to a buffer which is owned by the stream.
-  // The buffer contains data_len bytes.  NULL is returned if no data is
+  // The buffer contains data_len bytes.  null is returned if no data is
   // available, or if the method fails.  If the caller processes the data, it
   // must call ConsumeReadData with the number of processed bytes.  GetReadData
   // does not require a matching call to ConsumeReadData if the data is not
@@ -134,14 +135,14 @@ class StreamInterface : public MessageHandler {
   virtual void ConsumeReadData(size_t used) {}
 
   // GetWriteBuffer returns a pointer to a buffer which is owned by the stream.
-  // The buffer has a capacity of buf_len bytes.  NULL is returned if there is
+  // The buffer has a capacity of buf_len bytes.  null is returned if there is
   // no buffer available, or if the method fails.  The call may write data to
   // the buffer, and then call ConsumeWriteBuffer with the number of bytes
   // written.  GetWriteBuffer does not require a matching call to
   // ConsumeWriteData if no data is written.  Write, ForceWrite, and
   // ConsumeWriteData invalidate the buffer returned by GetWriteBuffer.
   // TODO: Allow the caller to specify a minimum buffer size.  If the specified
-  // amount of buffer is not yet available, return NULL and Signal SE_WRITE
+  // amount of buffer is not yet available, return null and Signal SE_WRITE
   // when it is available.  If the requested amount is too large, return an
   // error.
   virtual void* GetWriteBuffer(size_t* buf_len);
@@ -334,7 +335,7 @@ class StreamTap : public StreamAdapterInterface {
                      int* error) override;
 
  private:
-  scoped_ptr<StreamInterface> tap_;
+  std::unique_ptr<StreamInterface> tap_;
   StreamResult tap_result_;
   int tap_error_;
   RTC_DISALLOW_COPY_AND_ASSIGN(StreamTap);
@@ -542,20 +543,29 @@ class FifoBuffer : public StreamInterface {
   // Helper method that implements ReadOffset. Caller must acquire a lock
   // when calling this method.
   StreamResult ReadOffsetLocked(void* buffer, size_t bytes, size_t offset,
-                                size_t* bytes_read);
+                                size_t* bytes_read)
+      EXCLUSIVE_LOCKS_REQUIRED(crit_);
 
   // Helper method that implements WriteOffset. Caller must acquire a lock
   // when calling this method.
   StreamResult WriteOffsetLocked(const void* buffer, size_t bytes,
-                                 size_t offset, size_t* bytes_written);
+                                 size_t offset, size_t* bytes_written)
+      EXCLUSIVE_LOCKS_REQUIRED(crit_);
 
-  StreamState state_;  // keeps the opened/closed state of the stream
-  scoped_ptr<char[]> buffer_;  // the allocated buffer
-  size_t buffer_length_;  // size of the allocated buffer
-  size_t data_length_;  // amount of readable data in the buffer
-  size_t read_position_;  // offset to the readable data
-  Thread* owner_;  // stream callbacks are dispatched on this thread
-  mutable CriticalSection crit_;  // object lock
+  // keeps the opened/closed state of the stream
+  StreamState state_ GUARDED_BY(crit_);
+  // the allocated buffer
+  std::unique_ptr<char[]> buffer_ GUARDED_BY(crit_);
+  // size of the allocated buffer
+  size_t buffer_length_ GUARDED_BY(crit_);
+  // amount of readable data in the buffer
+  size_t data_length_ GUARDED_BY(crit_);
+  // offset to the readable data
+  size_t read_position_ GUARDED_BY(crit_);
+  // stream callbacks are dispatched on this thread
+  Thread* owner_;
+  // object lock
+  CriticalSection crit_;
   RTC_DISALLOW_COPY_AND_ASSIGN(FifoBuffer);
 };
 
@@ -693,8 +703,10 @@ class StreamReference : public StreamAdapterInterface {
 // this is the data that read from source but can't move to destination.
 // as a pass in parameter, it indicates data in buffer that should move to sink
 StreamResult Flow(StreamInterface* source,
-                  char* buffer, size_t buffer_len,
-                  StreamInterface* sink, size_t* data_len = NULL);
+                  char* buffer,
+                  size_t buffer_len,
+                  StreamInterface* sink,
+                  size_t* data_len = nullptr);
 
 ///////////////////////////////////////////////////////////////////////////////
 

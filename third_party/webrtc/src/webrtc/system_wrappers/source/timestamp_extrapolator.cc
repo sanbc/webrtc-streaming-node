@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/system_wrappers/interface/timestamp_extrapolator.h"
+#include "webrtc/system_wrappers/include/timestamp_extrapolator.h"
 
 #include <algorithm>
 
@@ -85,14 +85,6 @@ TimestampExtrapolator::Update(int64_t tMs, uint32_t ts90khz)
     int64_t unwrapped_ts90khz = static_cast<int64_t>(ts90khz) +
         _wrapArounds * ((static_cast<int64_t>(1) << 32) - 1);
 
-    if (_prevUnwrappedTimestamp >= 0 &&
-        unwrapped_ts90khz < _prevUnwrappedTimestamp)
-    {
-        // Drop reordered frames.
-        _rwLock->ReleaseLockExclusive();
-        return;
-    }
-
     if (_firstAfterReset)
     {
         // Make an initial guess of the offset,
@@ -114,6 +106,15 @@ TimestampExtrapolator::Update(int64_t tMs, uint32_t ts90khz)
         // the offset uncertainty. Don't do this during startup.
         _pP[1][1] = _pP11;
     }
+
+    if (_prevUnwrappedTimestamp >= 0 &&
+        unwrapped_ts90khz < _prevUnwrappedTimestamp)
+    {
+        // Drop reordered frames.
+        _rwLock->ReleaseLockExclusive();
+        return;
+    }
+
     //T = [t(k) 1]';
     //that = T'*w;
     //K = P*T/(lambda + T'*P*T);

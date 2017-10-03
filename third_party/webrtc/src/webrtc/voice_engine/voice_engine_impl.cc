@@ -12,11 +12,12 @@
 #include "webrtc/modules/audio_device/android/audio_device_template.h"
 #include "webrtc/modules/audio_device/android/audio_record_jni.h"
 #include "webrtc/modules/audio_device/android/audio_track_jni.h"
-#include "webrtc/modules/utility/interface/jvm_android.h"
 #endif
 
-#include "webrtc/modules/audio_coding/main/interface/audio_coding_module.h"
-#include "webrtc/system_wrappers/interface/trace.h"
+#include "webrtc/base/checks.h"
+#include "webrtc/modules/audio_coding/include/audio_coding_module.h"
+#include "webrtc/system_wrappers/include/trace.h"
+#include "webrtc/voice_engine/channel_proxy.h"
 #include "webrtc/voice_engine/voice_engine_impl.h"
 
 namespace webrtc {
@@ -27,25 +28,8 @@ namespace webrtc {
 // improvement here.
 static int32_t gVoiceEngineInstanceCounter = 0;
 
-VoiceEngine* GetVoiceEngine(const Config* config, bool owns_config) {
-#if (defined _WIN32)
-  HMODULE hmod = LoadLibrary(TEXT("VoiceEngineTestingDynamic.dll"));
-
-  if (hmod) {
-    typedef VoiceEngine* (*PfnGetVoiceEngine)(void);
-    PfnGetVoiceEngine pfn =
-        (PfnGetVoiceEngine)GetProcAddress(hmod, "GetVoiceEngine");
-    if (pfn) {
-      VoiceEngine* self = pfn();
-      if (owns_config) {
-        delete config;
-      }
-      return (self);
-    }
-  }
-#endif
-
-  VoiceEngineImpl* self = new VoiceEngineImpl(config, owns_config);
+VoiceEngine* GetVoiceEngine() {
+  VoiceEngineImpl* self = new VoiceEngineImpl();
   if (self != NULL) {
     self->AddRef();  // First reference.  Released in VoiceEngine::Delete.
     gVoiceEngineInstanceCounter++;
@@ -77,13 +61,17 @@ int VoiceEngineImpl::Release() {
   return new_ref;
 }
 
-VoiceEngine* VoiceEngine::Create() {
-  Config* config = new Config();
-  return GetVoiceEngine(config, true);
+std::unique_ptr<voe::ChannelProxy> VoiceEngineImpl::GetChannelProxy(
+    int channel_id) {
+  RTC_DCHECK(channel_id >= 0);
+  rtc::CritScope cs(crit_sec());
+  RTC_DCHECK(statistics().Initialized());
+  return std::unique_ptr<voe::ChannelProxy>(
+      new voe::ChannelProxy(channel_manager().GetChannel(channel_id)));
 }
 
-VoiceEngine* VoiceEngine::Create(const Config& config) {
-  return GetVoiceEngine(&config, false);
+VoiceEngine* VoiceEngine::Create() {
+  return GetVoiceEngine();
 }
 
 int VoiceEngine::SetTraceFilter(unsigned int filter) {
@@ -140,17 +128,12 @@ bool VoiceEngine::Delete(VoiceEngine*& voiceEngine) {
   return true;
 }
 
-#if !defined(WEBRTC_CHROMIUM_BUILD)
-// TODO(henrika): change types to JavaVM* and jobject instead of void*.
-int VoiceEngine::SetAndroidObjects(void* javaVM, void* context) {
-#ifdef WEBRTC_ANDROID
-  webrtc::JVM::Initialize(reinterpret_cast<JavaVM*>(javaVM),
-                          reinterpret_cast<jobject>(context));
-  return 0;
-#else
-  return -1;
+std::string VoiceEngine::GetVersionString() {
+  std::string version = "VoiceEngine 4.1.0";
+#ifdef WEBRTC_EXTERNAL_TRANSPORT
+  version += " (External transport build)";
 #endif
+  return version;
 }
-#endif
 
 }  // namespace webrtc

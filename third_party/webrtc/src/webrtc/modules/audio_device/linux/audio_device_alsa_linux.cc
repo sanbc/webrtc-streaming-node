@@ -10,20 +10,21 @@
 
 #include <assert.h>
 
+#include "webrtc/base/logging.h"
 #include "webrtc/modules/audio_device/audio_device_config.h"
 #include "webrtc/modules/audio_device/linux/audio_device_alsa_linux.h"
 
-#include "webrtc/system_wrappers/interface/event_wrapper.h"
-#include "webrtc/system_wrappers/interface/sleep.h"
-#include "webrtc/system_wrappers/interface/trace.h"
+#include "webrtc/system_wrappers/include/event_wrapper.h"
+#include "webrtc/system_wrappers/include/sleep.h"
+#include "webrtc/system_wrappers/include/trace.h"
 
-webrtc_adm_linux_alsa::AlsaSymbolTable AlsaSymbolTable;
+webrtc::adm_linux_alsa::AlsaSymbolTable AlsaSymbolTable;
 
 // Accesses ALSA functions through our late-binding symbol table instead of
 // directly. This way we don't have to link to libasound, which means our binary
 // will work on systems that don't have it.
 #define LATE(sym) \
-  LATESYM_GET(webrtc_adm_linux_alsa::AlsaSymbolTable, &AlsaSymbolTable, sym)
+  LATESYM_GET(webrtc::adm_linux_alsa::AlsaSymbolTable, &AlsaSymbolTable, sym)
 
 // Redefine these here to be able to do late-binding
 #undef snd_ctl_card_info_alloca
@@ -61,7 +62,6 @@ static const unsigned int ALSA_CAPTURE_WAIT_TIMEOUT = 5; // in ms
 
 AudioDeviceLinuxALSA::AudioDeviceLinuxALSA(const int32_t id) :
     _ptrAudioBuffer(NULL),
-    _critSect(*CriticalSectionWrapper::CreateCriticalSection()),
     _id(id),
     _mixerManager(id),
     _inputDeviceIndex(0),
@@ -129,13 +129,12 @@ AudioDeviceLinuxALSA::~AudioDeviceLinuxALSA()
         delete [] _playoutBuffer;
         _playoutBuffer = NULL;
     }
-    delete &_critSect;
 }
 
 void AudioDeviceLinuxALSA::AttachAudioBuffer(AudioDeviceBuffer* audioBuffer)
 {
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     _ptrAudioBuffer = audioBuffer;
 
@@ -155,32 +154,25 @@ int32_t AudioDeviceLinuxALSA::ActiveAudioLayer(
     return 0;
 }
 
-int32_t AudioDeviceLinuxALSA::Init()
-{
+AudioDeviceGeneric::InitStatus AudioDeviceLinuxALSA::Init() {
+  rtc::CritScope lock(&_critSect);
 
-    CriticalSectionScoped lock(&_critSect);
+  // Load libasound
+  if (!AlsaSymbolTable.Load()) {
+    // Alsa is not installed on this system
+    LOG(LS_ERROR) << "failed to load symbol table";
+    return InitStatus::OTHER_ERROR;
+  }
 
-    // Load libasound
-    if (!AlsaSymbolTable.Load())
-    {
-        // Alsa is not installed on
-        // this system
-        WEBRTC_TRACE(kTraceError, kTraceAudioDevice, _id,
-                   "  failed to load symbol table");
-        return -1;
-    }
-
-    if (_initialized)
-    {
-        return 0;
-    }
+  if (_initialized) {
+    return InitStatus::OK;
+  }
 #if defined(USE_X11)
     //Get X display handle for typing detection
     _XDisplay = XOpenDisplay(NULL);
-    if (!_XDisplay)
-    {
-        WEBRTC_TRACE(kTraceWarning, kTraceAudioDevice, _id,
-          "  failed to open X display, typing detection will not work");
+    if (!_XDisplay) {
+      LOG(LS_WARNING)
+          << "failed to open X display, typing detection will not work";
     }
 #endif
     _playWarning = 0;
@@ -190,7 +182,7 @@ int32_t AudioDeviceLinuxALSA::Init()
 
     _initialized = true;
 
-    return 0;
+    return InitStatus::OK;
 }
 
 int32_t AudioDeviceLinuxALSA::Terminate()
@@ -200,14 +192,14 @@ int32_t AudioDeviceLinuxALSA::Terminate()
         return 0;
     }
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     _mixerManager.Close();
 
     // RECORDING
     if (_ptrThreadRec)
     {
-        ThreadWrapper* tmpThread = _ptrThreadRec.release();
+        rtc::PlatformThread* tmpThread = _ptrThreadRec.release();
         _critSect.Leave();
 
         tmpThread->Stop();
@@ -219,7 +211,7 @@ int32_t AudioDeviceLinuxALSA::Terminate()
     // PLAYOUT
     if (_ptrThreadPlay)
     {
-        ThreadWrapper* tmpThread = _ptrThreadPlay.release();
+        rtc::PlatformThread* tmpThread = _ptrThreadPlay.release();
         _critSect.Leave();
 
         tmpThread->Stop();
@@ -249,7 +241,7 @@ bool AudioDeviceLinuxALSA::Initialized() const
 int32_t AudioDeviceLinuxALSA::InitSpeaker()
 {
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (_playing)
     {
@@ -264,7 +256,7 @@ int32_t AudioDeviceLinuxALSA::InitSpeaker()
 int32_t AudioDeviceLinuxALSA::InitMicrophone()
 {
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (_recording)
     {
@@ -566,7 +558,7 @@ int32_t AudioDeviceLinuxALSA::MicrophoneBoost(bool& enabled) const
 int32_t AudioDeviceLinuxALSA::StereoRecordingIsAvailable(bool& available)
 {
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     // If we already have initialized in stereo it's obviously available
     if (_recIsInitialized && (2 == _recChannels))
@@ -637,7 +629,7 @@ int32_t AudioDeviceLinuxALSA::StereoRecording(bool& enabled) const
 int32_t AudioDeviceLinuxALSA::StereoPlayoutIsAvailable(bool& available)
 {
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     // If we already have initialized in stereo it's obviously available
     if (_playIsInitialized && (2 == _playChannels))
@@ -1015,7 +1007,7 @@ int32_t AudioDeviceLinuxALSA::InitPlayout()
 
     int errVal = 0;
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     if (_playing)
     {
         return -1;
@@ -1168,7 +1160,7 @@ int32_t AudioDeviceLinuxALSA::InitRecording()
 
     int errVal = 0;
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     if (_recording)
     {
@@ -1363,21 +1355,11 @@ int32_t AudioDeviceLinuxALSA::StartRecording()
         return -1;
     }
     // RECORDING
-    const char* threadName = "webrtc_audio_module_capture_thread";
-    _ptrThreadRec = ThreadWrapper::CreateThread(
-        RecThreadFunc, this, threadName);
+    _ptrThreadRec.reset(new rtc::PlatformThread(
+        RecThreadFunc, this, "webrtc_audio_module_capture_thread"));
 
-    if (!_ptrThreadRec->Start())
-    {
-        WEBRTC_TRACE(kTraceCritical, kTraceAudioDevice, _id,
-                     "  failed to start the rec audio thread");
-        _recording = false;
-        _ptrThreadRec.reset();
-        delete [] _recordingBuffer;
-        _recordingBuffer = NULL;
-        return -1;
-    }
-    _ptrThreadRec->SetPriority(kRealtimePriority);
+    _ptrThreadRec->Start();
+    _ptrThreadRec->SetPriority(rtc::kRealtimePriority);
 
     errVal = LATE(snd_pcm_prepare)(_handleRecord);
     if (errVal < 0)
@@ -1413,7 +1395,7 @@ int32_t AudioDeviceLinuxALSA::StopRecording()
 {
 
     {
-      CriticalSectionScoped lock(&_critSect);
+      rtc::CritScope lock(&_critSect);
 
       if (!_recIsInitialized)
       {
@@ -1436,7 +1418,7 @@ int32_t AudioDeviceLinuxALSA::StopRecording()
         _ptrThreadRec.reset();
     }
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _recordingFramesLeft = 0;
     if (_recordingBuffer)
     {
@@ -1517,20 +1499,10 @@ int32_t AudioDeviceLinuxALSA::StartPlayout()
     }
 
     // PLAYOUT
-    const char* threadName = "webrtc_audio_module_play_thread";
-    _ptrThreadPlay =  ThreadWrapper::CreateThread(PlayThreadFunc, this,
-                                                  threadName);
-    if (!_ptrThreadPlay->Start())
-    {
-        WEBRTC_TRACE(kTraceCritical, kTraceAudioDevice, _id,
-                     "  failed to start the play audio thread");
-        _playing = false;
-        _ptrThreadPlay.reset();
-        delete [] _playoutBuffer;
-        _playoutBuffer = NULL;
-        return -1;
-    }
-    _ptrThreadPlay->SetPriority(kRealtimePriority);
+    _ptrThreadPlay.reset(new rtc::PlatformThread(
+        PlayThreadFunc, this, "webrtc_audio_module_play_thread"));
+    _ptrThreadPlay->Start();
+    _ptrThreadPlay->SetPriority(rtc::kRealtimePriority);
 
     int errVal = LATE(snd_pcm_prepare)(_handlePlayout);
     if (errVal < 0)
@@ -1549,7 +1521,7 @@ int32_t AudioDeviceLinuxALSA::StopPlayout()
 {
 
     {
-        CriticalSectionScoped lock(&_critSect);
+        rtc::CritScope lock(&_critSect);
 
         if (!_playIsInitialized)
         {
@@ -1571,7 +1543,7 @@ int32_t AudioDeviceLinuxALSA::StopPlayout()
         _ptrThreadPlay.reset();
     }
 
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
 
     _playoutFramesLeft = 0;
     delete [] _playoutBuffer;
@@ -1661,49 +1633,49 @@ int32_t AudioDeviceLinuxALSA::CPULoad(uint16_t& load) const
 
 bool AudioDeviceLinuxALSA::PlayoutWarning() const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     return (_playWarning > 0);
 }
 
 bool AudioDeviceLinuxALSA::PlayoutError() const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     return (_playError > 0);
 }
 
 bool AudioDeviceLinuxALSA::RecordingWarning() const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     return (_recWarning > 0);
 }
 
 bool AudioDeviceLinuxALSA::RecordingError() const
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     return (_recError > 0);
 }
 
 void AudioDeviceLinuxALSA::ClearPlayoutWarning()
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _playWarning = 0;
 }
 
 void AudioDeviceLinuxALSA::ClearPlayoutError()
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _playError = 0;
 }
 
 void AudioDeviceLinuxALSA::ClearRecordingWarning()
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _recWarning = 0;
 }
 
 void AudioDeviceLinuxALSA::ClearRecordingError()
 {
-    CriticalSectionScoped lock(&_critSect);
+    rtc::CritScope lock(&_critSect);
     _recError = 0;
 }
 
